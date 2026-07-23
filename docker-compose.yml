@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vadim
+      POSTGRES_PASSWORD: vadim
+      POSTGRES_DB: linguaswap
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vadim -d linguaswap"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "4000:4000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://vadim:vadim@db:5432/linguaswap
+      MIX_ENV: dev
+
+volumes:
+  postgres_data:
