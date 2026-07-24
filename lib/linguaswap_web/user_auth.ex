@@ -216,4 +216,36 @@ defmodule LinguaswapWeb.UserAuth do
   end
 
   defp maybe_store_return_to(conn), do: conn
+
+  ## LiveView on_mount hooks
+
+  def on_mount(:require_authenticated, _params, session, socket) do
+    socket = mount_current_scope(session, socket)
+
+    if socket.assigns.current_scope && socket.assigns.current_scope.user do
+      {:cont, socket}
+    else
+      {:halt, Phoenix.LiveView.redirect(socket, to: ~p"/email/log-in")}
+    end
+  end
+
+  def on_mount(:fetch_current_scope, _params, session, socket) do
+    {:cont, mount_current_scope(session, socket)}
+  end
+
+  defp mount_current_scope(session, socket) do
+    case session do
+      %{"user_token" => token} ->
+        case Accounts.get_user_by_session_token(token) do
+          {user, _token_inserted_at} ->
+            Phoenix.Component.assign(socket, :current_scope, Scope.for_user(user))
+
+          _ ->
+            Phoenix.Component.assign(socket, :current_scope, Scope.for_user(nil))
+        end
+
+      _ ->
+        Phoenix.Component.assign(socket, :current_scope, Scope.for_user(nil))
+    end
+  end
 end

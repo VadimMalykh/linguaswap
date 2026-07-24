@@ -17,7 +17,13 @@ defmodule Linguaswap.Vocabulary.Word do
   @doc false
   def changeset(word, attrs) do
     word
-    |> cast(attrs, [:original_word, :target_translation, :language_pair, :frequency_rank, :difficulty_score])
+    |> cast(attrs, [
+      :original_word,
+      :target_translation,
+      :language_pair,
+      :frequency_rank,
+      :difficulty_score
+    ])
     |> validate_required([:original_word, :target_translation, :language_pair])
     |> unique_constraint([:original_word, :language_pair])
   end

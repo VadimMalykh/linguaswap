@@ -2,6 +2,7 @@ defmodule Linguaswap.Vocabulary.PageVisit do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :id, autogenerate: true}
   schema "page_visits" do
     field :url, :string
     field :words_replaced, :integer, default: 0

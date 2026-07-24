@@ -2,6 +2,7 @@ defmodule Linguaswap.Vocabulary.UserWord do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @primary_key {:id, :id, autogenerate: true}
   schema "user_words" do
     field :reveal_count, :integer, default: 0
     field :replacement_count, :integer, default: 0

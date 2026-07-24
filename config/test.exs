@@ -9,7 +9,11 @@ config :bcrypt_elixir, :log_rounds, 1
 # to provide built-in test partitioning in CI environment.
 # Run `mix help test` for more information.
 config :linguaswap, Linguaswap.Repo,
-  url: System.get_env("DATABASE_URL", "postgresql://vadim:vadim@localhost:5432/linguaswap_test#{System.get_env("MIX_TEST_PARTITION")}"),
+  url:
+    System.get_env(
+      "TEST_DATABASE_URL",
+      "postgresql://vadim:vadim@db:5432/linguaswap_test#{System.get_env("MIX_TEST_PARTITION")}"
+    ),
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 

@@ -22,6 +22,7 @@ defmodule LinguaswapWeb.Router do
   pipeline :api_auth do
     plug :accepts, ["json"]
     plug :fetch_session
+    plug :fetch_live_flash
     plug :fetch_current_scope_for_user
     plug :require_authenticated_user
   end
@@ -81,7 +82,15 @@ defmodule LinguaswapWeb.Router do
     get "/email/settings", UserSettingsController, :edit
     put "/email/settings", UserSettingsController, :update
     get "/email/settings/confirm-email/:token", UserSettingsController, :confirm_email
-    live "/dashboard", DashboardLive
+  end
+
+  live_session :require_authenticated_user,
+    on_mount: [{LinguaswapWeb.UserAuth, :require_authenticated}] do
+    scope "/", LinguaswapWeb do
+      pipe_through :browser
+
+      live "/dashboard", DashboardLive
+    end
   end
 
   scope "/", LinguaswapWeb do

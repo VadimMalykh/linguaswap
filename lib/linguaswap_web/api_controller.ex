@@ -7,7 +7,7 @@ defmodule LinguaswapWeb.ApiController do
   action_fallback LinguaswapWeb.FallbackController
 
   def get_words(conn, %{"language_pair" => language_pair}) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
     words_data = Vocabulary.get_words_for_replacement(user.id, language_pair)
 
     result =
@@ -27,7 +27,7 @@ defmodule LinguaswapWeb.ApiController do
   end
 
   def record_reveal(conn, %{"word" => original_word, "language_pair" => language_pair}) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
 
     case Vocabulary.get_word_by_original(original_word, language_pair) do
       nil ->
@@ -42,7 +42,7 @@ defmodule LinguaswapWeb.ApiController do
   end
 
   def record_replacement(conn, %{"word" => original_word, "language_pair" => language_pair}) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
 
     case Vocabulary.get_word_by_original(original_word, language_pair) do
       nil ->
@@ -56,28 +56,33 @@ defmodule LinguaswapWeb.ApiController do
     end
   end
 
-  def record_page_visit(conn, %{"url" => url, "words_replaced" => words_replaced, "time_spent" => time_spent}) do
-    user = conn.assigns.current_user
+  def record_page_visit(conn, %{
+        "url" => url,
+        "words_replaced" => words_replaced,
+        "time_spent" => time_spent
+      }) do
+    user = conn.assigns.current_scope.user
 
-    {:ok, _} = Vocabulary.create_page_visit(%{
-      user_id: user.id,
-      url: url,
-      words_replaced: words_replaced,
-      time_spent_seconds: time_spent
-    })
+    {:ok, _} =
+      Vocabulary.create_page_visit(%{
+        user_id: user.id,
+        url: url,
+        words_replaced: words_replaced,
+        time_spent_seconds: time_spent
+      })
 
     json(conn, %{success: true})
   end
 
   def get_stats(conn, _params) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
     stats = Vocabulary.get_user_stats(user.id)
 
     json(conn, %{stats: stats})
   end
 
   def get_settings(conn, _params) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
 
     json(conn, %{
       settings: %{
@@ -88,7 +93,7 @@ defmodule LinguaswapWeb.ApiController do
   end
 
   def update_settings(conn, %{"target_language" => target_language, "settings" => settings}) do
-    user = conn.assigns.current_user
+    user = conn.assigns.current_scope.user
 
     {:ok, user} = Accounts.update_user_target_language(user, target_language)
     {:ok, _} = Accounts.update_user_settings(user, settings || %{})
