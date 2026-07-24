@@ -71,7 +71,20 @@ defmodule LinguaswapWeb.UserAuth do
       |> assign(:current_scope, Scope.for_user(user))
       |> maybe_reissue_user_session_token(user, token_inserted_at)
     else
-      nil -> assign(conn, :current_scope, Scope.for_user(nil))
+      nil ->
+        case get_bearer_token(conn) do
+          nil ->
+            assign(conn, :current_scope, Scope.for_user(nil))
+
+          token ->
+            case Accounts.get_user_by_session_token(token) do
+              {user, _token_inserted_at} ->
+                assign(conn, :current_scope, Scope.for_user(user))
+
+              _ ->
+                assign(conn, :current_scope, Scope.for_user(nil))
+            end
+        end
     end
   end
 
@@ -164,6 +177,13 @@ defmodule LinguaswapWeb.UserAuth do
 
   defp put_token_in_session(conn, token) do
     put_session(conn, :user_token, token)
+  end
+
+  defp get_bearer_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      ["Bearer " <> token] -> token
+      _ -> nil
+    end
   end
 
   @doc """

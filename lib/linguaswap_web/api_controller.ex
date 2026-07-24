@@ -6,6 +6,24 @@ defmodule LinguaswapWeb.ApiController do
 
   action_fallback LinguaswapWeb.FallbackController
 
+  def login(conn, %{"email" => email, "password" => password}) do
+    case Accounts.get_user_by_email_and_password(email, password) do
+      nil ->
+        conn
+        |> put_status(:unauthorized)
+        |> json(%{error: "Invalid email or password"})
+
+      user ->
+        token = Accounts.generate_user_session_token(user)
+        encoded = Base.url_encode64(token, padding: false)
+
+        json(conn, %{
+          token: encoded,
+          user: %{id: user.id, email: user.email, target_language: user.target_language}
+        })
+    end
+  end
+
   def get_words(conn, %{"language_pair" => language_pair}) do
     user = conn.assigns.current_scope.user
     words_data = Vocabulary.get_words_for_replacement(user.id, language_pair)

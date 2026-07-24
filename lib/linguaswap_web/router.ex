@@ -28,6 +28,12 @@ defmodule LinguaswapWeb.Router do
   end
 
   scope "/api/v1", LinguaswapWeb do
+    pipe_through :api
+
+    post "/auth/login", ApiController, :login
+  end
+
+  scope "/api/v1", LinguaswapWeb do
     pipe_through :api_auth
 
     get "/words", ApiController, :get_words
