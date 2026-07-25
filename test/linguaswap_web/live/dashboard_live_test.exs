@@ -13,8 +13,9 @@ defmodule LinguaswapWeb.DashboardLiveTest do
 
       assert html =~ "Your Progress"
       assert html =~ "Total Words"
-      assert html =~ "Known Words"
-      assert html =~ "Learning"
+      assert html =~ "Hard"
+      assert html =~ "Simple"
+      assert html =~ "Easy"
     end
 
     test "displays stats for user with no words", %{conn: conn} do

@@ -50,8 +50,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.type === "RATE_WORD") {
+    handleRateWord(message.word, message.languagePair, message.status)
+      .then(() => sendResponse({ ok: true }))
+      .catch((err) => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
+
   if (message.type === "RECORD_PAGE_VISIT") {
-    handleRecordPageVisit(message.url, message.wordsReplaced, message.timeSpent)
+    handleRecordPageVisit(message.url, message.wordsReplaced, message.timeSpent, message.languagePair)
       .then(() => sendResponse({ ok: true }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
@@ -139,13 +146,25 @@ async function handleRecordReplacement(word, languagePair) {
   }
 }
 
-async function handleRecordPageVisit(url, wordsReplaced, timeSpent) {
+async function handleRateWord(word, languagePair, status) {
+  const resp = await authFetch("/words/rate", {
+    method: "POST",
+    body: JSON.stringify({ word, language_pair: languagePair, status }),
+  });
+  if (!resp.ok) {
+    const data = await resp.json();
+    throw new Error(data.error || "Failed to rate word");
+  }
+}
+
+async function handleRecordPageVisit(url, wordsReplaced, timeSpent, languagePair) {
   const resp = await authFetch("/pagevisit", {
     method: "POST",
     body: JSON.stringify({
       url,
       words_replaced: wordsReplaced,
       time_spent: timeSpent,
+      language_pair: languagePair,
     }),
   });
   if (!resp.ok) {

@@ -15,20 +15,25 @@ defmodule LinguaswapWeb.DashboardLive do
       <div class="max-w-4xl mx-auto p-6">
         <h1 class="text-3xl font-bold mb-8">Your Progress</h1>
 
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-6 mb-8">
           <div class="bg-white p-6 rounded-lg shadow-md">
             <div class="text-4xl font-bold text-emerald-600">{@stats.total_words}</div>
             <div class="text-gray-600 mt-2">Total Words</div>
           </div>
 
           <div class="bg-white p-6 rounded-lg shadow-md">
-            <div class="text-4xl font-bold text-blue-600">{@stats.known_words}</div>
-            <div class="text-gray-600 mt-2">Known Words</div>
+            <div class="text-4xl font-bold text-red-600">{@stats.hard_words}</div>
+            <div class="text-gray-600 mt-2">Hard</div>
           </div>
 
           <div class="bg-white p-6 rounded-lg shadow-md">
-            <div class="text-4xl font-bold text-amber-600">{@stats.learning_words}</div>
-            <div class="text-gray-600 mt-2">Learning</div>
+            <div class="text-4xl font-bold text-amber-600">{@stats.simple_words}</div>
+            <div class="text-gray-600 mt-2">Simple</div>
+          </div>
+
+          <div class="bg-white p-6 rounded-lg shadow-md">
+            <div class="text-4xl font-bold text-emerald-500">{@stats.trivial_words}</div>
+            <div class="text-gray-600 mt-2">Easy</div>
           </div>
         </div>
 
@@ -45,8 +50,8 @@ defmodule LinguaswapWeb.DashboardLive do
                 <span class="font-medium">{@stats.total_replacements}</span>
               </div>
               <div class="flex justify-between">
-                <span class="text-gray-600">New Words</span>
-                <span class="font-medium">{@stats.new_words}</span>
+                <span class="text-gray-600">Trivial (mastered)</span>
+                <span class="font-medium">{@stats.trivial_words}</span>
               </div>
             </div>
           </div>

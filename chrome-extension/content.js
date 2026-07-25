@@ -7,6 +7,7 @@
   let replacementCount = 0;
   let startTime = Date.now();
   let processedNodes = new WeakSet();
+  let activePopup = null;
 
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT",
@@ -146,12 +147,12 @@
 
     span.textContent = wordData.translation;
 
-    if (wordData.status === "new") {
-      span.classList.add("ls-status-new");
-    } else if (wordData.status === "learning") {
-      span.classList.add("ls-status-learning");
+    if (wordData.status === "hard") {
+      span.classList.add("ls-status-hard");
+    } else if (wordData.status === "simple") {
+      span.classList.add("ls-status-simple");
     } else {
-      span.classList.add("ls-status-known");
+      span.classList.add("ls-status-trivial");
     }
 
     let revealed = false;
@@ -179,8 +180,87 @@
       }
     });
 
+    span.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showRatingPopup(span, cleanWord);
+    });
+
     replacementCount++;
     return span;
+  }
+
+  function showRatingPopup(span, word) {
+    removeActivePopup();
+
+    const popup = document.createElement("div");
+    popup.className = "linguaswap-rating-popup";
+    popup.dataset.linguaswap = "true";
+
+    const buttons = [
+      { status: "hard", label: "Hard", cls: "ls-btn-hard" },
+      { status: "simple", label: "Simple", cls: "ls-btn-simple" },
+      { status: "trivial", label: "Easy", cls: "ls-btn-trivial" },
+    ];
+
+    for (const btn of buttons) {
+      const button = document.createElement("button");
+      button.className = `ls-rate-btn ${btn.cls}`;
+      button.textContent = btn.label;
+      if (span.dataset.status === btn.status) {
+        button.classList.add("ls-rate-active");
+      }
+      button.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        rateWord(span, word, btn.status);
+      });
+      popup.appendChild(button);
+    }
+
+    document.body.appendChild(popup);
+    activePopup = popup;
+
+    const rect = span.getBoundingClientRect();
+    popup.style.left = `${rect.left + window.scrollX}px`;
+    popup.style.top = `${rect.top + window.scrollY + rect.height + 4}px`;
+
+    const hideHandler = (e) => {
+      if (!popup.contains(e.target) && e.target !== span) {
+        removeActivePopup();
+        document.removeEventListener("click", hideHandler);
+      }
+    };
+    setTimeout(() => document.addEventListener("click", hideHandler), 10);
+  }
+
+  function removeActivePopup() {
+    if (activePopup && activePopup.parentNode) {
+      activePopup.parentNode.removeChild(activePopup);
+    }
+    activePopup = null;
+  }
+
+  function rateWord(span, word, status) {
+    span.dataset.status = status;
+
+    span.classList.remove("ls-status-hard", "ls-status-simple", "ls-status-trivial");
+    if (status === "hard") {
+      span.classList.add("ls-status-hard");
+    } else if (status === "simple") {
+      span.classList.add("ls-status-simple");
+    } else {
+      span.classList.add("ls-status-trivial");
+    }
+
+    chrome.runtime.sendMessage({
+      type: "RATE_WORD",
+      word,
+      languagePair,
+      status,
+    });
+
+    removeActivePopup();
   }
 
   function removeAllReplacements() {
@@ -208,6 +288,7 @@
           url: window.location.href,
           wordsReplaced: replacementCount,
           timeSpent: elapsed,
+          languagePair,
         });
       }
     }, 30000);
@@ -215,21 +296,12 @@
     window.addEventListener("beforeunload", () => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       if (replacementCount > 0) {
-        navigator.sendBeacon(
-          "about:blank",
-          JSON.stringify({
-            type: "PAGE_LEAVE",
-            url: window.location.href,
-            wordsReplaced: replacementCount,
-            timeSpent: elapsed,
-          })
-        );
-
         chrome.runtime.sendMessage({
           type: "RECORD_PAGE_VISIT",
           url: window.location.href,
           wordsReplaced: replacementCount,
           timeSpent: elapsed,
+          languagePair,
         });
       }
     });

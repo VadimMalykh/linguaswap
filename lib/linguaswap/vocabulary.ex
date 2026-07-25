@@ -7,6 +7,8 @@ defmodule Linguaswap.Vocabulary do
   alias Linguaswap.Repo
   alias Linguaswap.Vocabulary.{Word, UserWord, PageVisit}
 
+  @valid_statuses ~w(hard simple trivial)
+
   def list_words_for_user(user_id, language_pair \\ nil) do
     query =
       from w in Word, join: uw in UserWord, on: w.id == uw.word_id, where: uw.user_id == ^user_id
@@ -72,12 +74,26 @@ defmodule Linguaswap.Vocabulary do
   def record_word_reveal(user_id, word_id) do
     user_word = get_or_create_user_word!(user_id, word_id)
 
-    user_word
-    |> UserWord.changeset(%{
+    updates = %{
       reveal_count: user_word.reveal_count + 1,
-      last_revealed_at: DateTime.utc_now(),
-      status: calculate_status(user_word.reveal_count + 1)
-    })
+      last_revealed_at: DateTime.utc_now()
+    }
+
+    updates =
+      cond do
+        user_word.status == "trivial" ->
+          Map.put(updates, :status, "simple")
+
+        user_word.status == "simple" and
+            user_word.reveal_count + 1 > max(user_word.exposure_count * 0.5, 3) ->
+          Map.put(updates, :status, "hard")
+
+        true ->
+          updates
+      end
+
+    user_word
+    |> UserWord.changeset(updates)
     |> Repo.update()
   end
 
@@ -91,13 +107,66 @@ defmodule Linguaswap.Vocabulary do
     |> Repo.update()
   end
 
-  defp calculate_status(reveal_count) do
-    cond do
-      reveal_count == 0 -> "new"
-      reveal_count < 3 -> "learning"
-      true -> "known"
+  def rate_word(user_id, word_id, status) when status in @valid_statuses do
+    user_word = get_or_create_user_word!(user_id, word_id)
+
+    user_word
+    |> UserWord.changeset(%{status: status})
+    |> Repo.update()
+  end
+
+  def rate_word(_user_id, _word_id, _status), do: {:error, :invalid_status}
+
+  def increment_exposure(user_id, language_pair) do
+    user_word_ids =
+      from(uw in UserWord,
+        join: w in Word,
+        on: w.id == uw.word_id,
+        where: uw.user_id == ^user_id,
+        where: w.language_pair == ^language_pair,
+        where: uw.status in ["hard", "simple"],
+        select: uw.id
+      )
+      |> Repo.all()
+
+    unless user_word_ids == [] do
+      from(uw in UserWord, where: uw.id in ^user_word_ids)
+      |> Repo.update_all(inc: [exposure_count: 1])
+    end
+
+    check_auto_promotions(user_id, user_word_ids)
+  end
+
+  defp check_auto_promotions(_user_id, user_word_ids) do
+    unless user_word_ids == [] do
+      words_to_promote =
+        from(uw in UserWord,
+          where: uw.id in ^user_word_ids,
+          select: uw
+        )
+        |> Repo.all()
+
+      Enum.each(words_to_promote, fn uw ->
+        new_status = maybe_auto_promote(uw)
+
+        if new_status && new_status != uw.status do
+          uw
+          |> UserWord.changeset(%{status: new_status})
+          |> Repo.update()
+        end
+      end)
     end
   end
+
+  defp maybe_auto_promote(%UserWord{status: "hard", exposure_count: exp, reveal_count: rev})
+       when exp >= 50 and rev == 0,
+       do: "simple"
+
+  defp maybe_auto_promote(%UserWord{status: "simple", exposure_count: exp, reveal_count: rev})
+       when exp >= 100 and rev == 0,
+       do: "trivial"
+
+  defp maybe_auto_promote(_), do: nil
 
   def create_page_visit(%{user_id: user_id} = attrs) do
     attrs = Map.delete(attrs, :user_id)
@@ -118,9 +187,9 @@ defmodule Linguaswap.Vocabulary do
 
     %{
       total_words: length(user_words),
-      known_words: Enum.count(user_words, &(&1.status == "known")),
-      learning_words: Enum.count(user_words, &(&1.status == "learning")),
-      new_words: Enum.count(user_words, &(&1.status == "new")),
+      hard_words: Enum.count(user_words, &(&1.status == "hard")),
+      simple_words: Enum.count(user_words, &(&1.status == "simple")),
+      trivial_words: Enum.count(user_words, &(&1.status == "trivial")),
       total_reveals: Enum.reduce(user_words, 0, &(&1.reveal_count + &2)),
       total_replacements: Enum.reduce(user_words, 0, &(&1.replacement_count + &2))
     }
@@ -131,7 +200,7 @@ defmodule Linguaswap.Vocabulary do
       left_join: uw in UserWord,
       on: w.id == uw.word_id and uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
-      where: uw.status in ["learning", "known"] or is_nil(uw.id),
+      where: is_nil(uw.id) or uw.status in ["hard", "simple"],
       select: %{word: w, user_word: uw}
     )
     |> Repo.all()

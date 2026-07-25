@@ -39,6 +39,7 @@ defmodule LinguaswapWeb.Router do
     get "/words", ApiController, :get_words
     post "/words/reveal", ApiController, :record_reveal
     post "/words/replace", ApiController, :record_replacement
+    post "/words/rate", ApiController, :rate_word
     post "/pagevisit", ApiController, :record_page_visit
     get "/stats", ApiController, :get_stats
     get "/settings", ApiController, :get_settings

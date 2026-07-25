@@ -79,7 +79,7 @@ defmodule Linguaswap.VocabularyTest do
   end
 
   describe "get_or_create_user_word!/2" do
-    test "creates user_word for new combination" do
+    test "creates user_word for new combination with default hard status" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word} =
@@ -93,7 +93,8 @@ defmodule Linguaswap.VocabularyTest do
       assert user_word.user_id == user.id
       assert user_word.word_id == word.id
       assert user_word.reveal_count == 0
-      assert user_word.status == "new"
+      assert user_word.status == "hard"
+      assert user_word.exposure_count == 0
     end
 
     test "returns existing user_word if found" do
@@ -113,7 +114,7 @@ defmodule Linguaswap.VocabularyTest do
   end
 
   describe "record_word_reveal/2" do
-    test "increments reveal_count and updates status" do
+    test "increments reveal_count" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word} =
@@ -125,16 +126,28 @@ defmodule Linguaswap.VocabularyTest do
 
       {:ok, uw} = Vocabulary.record_word_reveal(user.id, word.id)
       assert uw.reveal_count == 1
-      assert uw.status == "learning"
+      assert uw.status == "hard"
       assert uw.last_revealed_at != nil
 
       {:ok, uw} = Vocabulary.record_word_reveal(user.id, word.id)
       assert uw.reveal_count == 2
-      assert uw.status == "learning"
+    end
+
+    test "demotes trivial to simple on reveal" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      Vocabulary.rate_word(user.id, word.id, "trivial")
 
       {:ok, uw} = Vocabulary.record_word_reveal(user.id, word.id)
-      assert uw.reveal_count == 3
-      assert uw.status == "known"
+      assert uw.status == "simple"
     end
   end
 
@@ -157,15 +170,165 @@ defmodule Linguaswap.VocabularyTest do
     end
   end
 
+  describe "rate_word/3" do
+    test "sets status to hard" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      {:ok, uw} = Vocabulary.rate_word(user.id, word.id, "hard")
+      assert uw.status == "hard"
+    end
+
+    test "sets status to simple" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      {:ok, uw} = Vocabulary.rate_word(user.id, word.id, "simple")
+      assert uw.status == "simple"
+    end
+
+    test "sets status to trivial" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      {:ok, uw} = Vocabulary.rate_word(user.id, word.id, "trivial")
+      assert uw.status == "trivial"
+    end
+
+    test "rejects invalid status" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+
+      assert {:error, :invalid_status} = Vocabulary.rate_word(user.id, word.id, "invalid")
+    end
+  end
+
+  describe "increment_exposure/2" do
+    test "increments exposure_count for hard and simple words" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      user_word = Vocabulary.get_or_create_user_word!(user.id, word.id)
+      assert user_word.exposure_count == 0
+
+      Vocabulary.increment_exposure(user.id, "en-es")
+
+      updated = Vocabulary.get_user_word(user.id, word.id)
+      assert updated.exposure_count == 1
+    end
+
+    test "does not increment exposure for trivial words" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      Vocabulary.rate_word(user.id, word.id, "trivial")
+
+      Vocabulary.increment_exposure(user.id, "en-es")
+
+      updated = Vocabulary.get_user_word(user.id, word.id)
+      assert updated.exposure_count == 0
+    end
+
+    test "auto-promotes hard to simple after 50 exposures with 0 reveals" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+
+      for _ <- 1..49 do
+        Vocabulary.increment_exposure(user.id, "en-es")
+      end
+
+      uw = Vocabulary.get_user_word(user.id, word.id)
+      assert uw.status == "hard"
+
+      Vocabulary.increment_exposure(user.id, "en-es")
+
+      uw = Vocabulary.get_user_word(user.id, word.id)
+      assert uw.status == "simple"
+    end
+
+    test "auto-promotes simple to trivial after 100 exposures with 0 reveals" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      Vocabulary.rate_word(user.id, word.id, "simple")
+
+      for _ <- 1..99 do
+        Vocabulary.increment_exposure(user.id, "en-es")
+      end
+
+      uw = Vocabulary.get_user_word(user.id, word.id)
+      assert uw.status == "simple"
+
+      Vocabulary.increment_exposure(user.id, "en-es")
+
+      uw = Vocabulary.get_user_word(user.id, word.id)
+      assert uw.status == "trivial"
+    end
+  end
+
   describe "get_user_stats/1" do
     test "returns zero stats for user with no words" do
       user = AccountsFixtures.user_fixture()
       stats = Vocabulary.get_user_stats(user.id)
 
       assert stats.total_words == 0
-      assert stats.known_words == 0
-      assert stats.learning_words == 0
-      assert stats.new_words == 0
+      assert stats.hard_words == 0
+      assert stats.simple_words == 0
+      assert stats.trivial_words == 0
       assert stats.total_reveals == 0
       assert stats.total_replacements == 0
     end
@@ -187,31 +350,27 @@ defmodule Linguaswap.VocabularyTest do
           language_pair: "en-es"
         })
 
-      # word1: 1 reveal -> learning
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word1.id)
+      Vocabulary.get_or_create_user_word!(user.id, word1.id)
+      Vocabulary.get_or_create_user_word!(user.id, word2.id)
 
-      # word2: 3 reveals -> known
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
+      Vocabulary.rate_word(user.id, word1.id, "hard")
+      Vocabulary.rate_word(user.id, word2.id, "trivial")
 
-      # record some replacements
       {:ok, _} = Vocabulary.record_word_replacement(user.id, word1.id)
       {:ok, _} = Vocabulary.record_word_replacement(user.id, word2.id)
       {:ok, _} = Vocabulary.record_word_replacement(user.id, word2.id)
 
       stats = Vocabulary.get_user_stats(user.id)
       assert stats.total_words == 2
-      assert stats.known_words == 1
-      assert stats.learning_words == 1
-      assert stats.new_words == 0
-      assert stats.total_reveals == 4
+      assert stats.hard_words == 1
+      assert stats.trivial_words == 1
+      assert stats.simple_words == 0
       assert stats.total_replacements == 3
     end
   end
 
   describe "get_words_for_replacement/2" do
-    test "returns learning, known, and unseen words" do
+    test "returns hard, simple, and unseen words but not trivial" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word1} =
@@ -235,19 +394,15 @@ defmodule Linguaswap.VocabularyTest do
           language_pair: "en-es"
         })
 
-      # word1: learning (1 reveal)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word1.id)
+      Vocabulary.get_or_create_user_word!(user.id, word1.id)
+      Vocabulary.rate_word(user.id, word1.id, "hard")
 
-      # word2: known (3 reveals)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
-      {:ok, _} = Vocabulary.record_word_reveal(user.id, word2.id)
-
-      # word3: unseen (no interaction)
+      Vocabulary.get_or_create_user_word!(user.id, word2.id)
+      Vocabulary.rate_word(user.id, word2.id, "trivial")
 
       results = Vocabulary.get_words_for_replacement(user.id, "en-es")
       original_words = Enum.map(results, & &1.word.original_word) |> Enum.sort()
-      assert Enum.sort(["hello", "world", "foo"]) == original_words
+      assert Enum.sort(["hello", "foo"]) == original_words
     end
 
     test "filters by language_pair" do

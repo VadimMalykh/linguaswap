@@ -66,8 +66,9 @@ document.addEventListener("DOMContentLoaded", () => {
     chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
       if (response && response.ok) {
         document.getElementById("stat-total").textContent = response.stats.total_words;
-        document.getElementById("stat-known").textContent = response.stats.known_words;
-        document.getElementById("stat-learning").textContent = response.stats.learning_words;
+        document.getElementById("stat-hard").textContent = response.stats.hard_words;
+        document.getElementById("stat-simple").textContent = response.stats.simple_words;
+        document.getElementById("stat-trivial").textContent = response.stats.trivial_words;
       }
     });
   }

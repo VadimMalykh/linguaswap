@@ -23,12 +23,27 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert %{
                "original" => "hello",
                "translation" => "hola",
-               "status" => "learning",
+               "status" => "hard",
                "reveal_count" => 1
              } = hd(words)
     end
 
     test "returns empty list when no words exist", %{conn: conn} do
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => []} = json_response(conn, 200)
+    end
+
+    test "excludes trivial words", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      Vocabulary.rate_word(user.id, word.id, "trivial")
+
       conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
       assert %{"words" => []} = json_response(conn, 200)
     end
@@ -92,8 +107,105 @@ defmodule LinguaswapWeb.ApiControllerTest do
     end
   end
 
+  describe "POST /api/v1/words/rate" do
+    test "rates a word as hard", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      conn =
+        post(conn, ~p"/api/v1/words/rate", %{
+          "word" => "hello",
+          "language_pair" => "en-es",
+          "status" => "hard"
+        })
+
+      assert %{"success" => true, "status" => "hard"} = json_response(conn, 200)
+
+      user_word = Vocabulary.get_user_word(user.id, word.id)
+      assert user_word.status == "hard"
+    end
+
+    test "rates a word as trivial", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      conn =
+        post(conn, ~p"/api/v1/words/rate", %{
+          "word" => "hello",
+          "language_pair" => "en-es",
+          "status" => "trivial"
+        })
+
+      assert %{"success" => true, "status" => "trivial"} = json_response(conn, 200)
+
+      user_word = Vocabulary.get_user_word(user.id, word.id)
+      assert user_word.status == "trivial"
+    end
+
+    test "returns error for invalid status", %{conn: conn} do
+      {:ok, _word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      conn =
+        post(conn, ~p"/api/v1/words/rate", %{
+          "word" => "hello",
+          "language_pair" => "en-es",
+          "status" => "invalid"
+        })
+
+      assert json_response(conn, 422)["error"] == "Invalid status"
+    end
+
+    test "returns 404 for non-existent word", %{conn: conn} do
+      conn =
+        post(conn, ~p"/api/v1/words/rate", %{
+          "word" => "nonexistent",
+          "language_pair" => "en-es",
+          "status" => "hard"
+        })
+
+      assert %{"error" => "Word not found"} = json_response(conn, 404)
+    end
+  end
+
   describe "POST /api/v1/pagevisit" do
-    test "records a page visit", %{conn: conn} do
+    test "records a page visit and increments exposure", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+
+      conn =
+        post(conn, ~p"/api/v1/pagevisit", %{
+          "url" => "https://example.com",
+          "words_replaced" => 5,
+          "time_spent" => 120,
+          "language_pair" => "en-es"
+        })
+
+      assert json_response(conn, 200)["success"] == true
+
+      user_word = Vocabulary.get_user_word(user.id, word.id)
+      assert user_word.exposure_count == 1
+    end
+
+    test "records a page visit without language_pair", %{conn: conn} do
       conn =
         post(conn, ~p"/api/v1/pagevisit", %{
           "url" => "https://example.com",
@@ -110,8 +222,9 @@ defmodule LinguaswapWeb.ApiControllerTest do
       conn = get(conn, ~p"/api/v1/stats")
       assert %{"stats" => stats} = json_response(conn, 200)
       assert is_integer(stats["total_words"])
-      assert is_integer(stats["known_words"])
-      assert is_integer(stats["learning_words"])
+      assert is_integer(stats["hard_words"])
+      assert is_integer(stats["simple_words"])
+      assert is_integer(stats["trivial_words"])
     end
   end
 
@@ -150,7 +263,8 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
   describe "POST /api/v1/auth/login" do
     test "returns token for valid credentials" do
-      user = Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
+      user =
+        Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
 
       conn =
         Phoenix.ConnTest.build_conn()
@@ -180,7 +294,9 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
   describe "Bearer token authentication" do
     test "accesses protected endpoint with Bearer token" do
-      user = Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
+      user =
+        Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
+
       token = Linguaswap.Accounts.generate_user_session_token(user)
       encoded = Base.url_encode64(token, padding: false)
 

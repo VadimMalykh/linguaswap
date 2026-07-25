@@ -105,7 +105,7 @@
 
     .stats-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
       gap: 8px;
       padding: 0 16px 12px;
     }
@@ -124,6 +124,7 @@
     }
 
     .stat-value.green { color: #059669; }
+    .stat-value.red { color: #dc2626; }
     .stat-value.blue { color: #2563eb; }
     .stat-value.amber { color: #d97706; }
 
@@ -284,12 +285,16 @@
         <div class="stat-label">Total</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value blue" id="stat-known">0</div>
-        <div class="stat-label">Known</div>
+        <div class="stat-value red" id="stat-hard">0</div>
+        <div class="stat-label">Hard</div>
       </div>
       <div class="stat-card">
-        <div class="stat-value amber" id="stat-learning">0</div>
-        <div class="stat-label">Learning</div>
+        <div class="stat-value amber" id="stat-simple">0</div>
+        <div class="stat-label">Simple</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value green" id="stat-trivial">0</div>
+        <div class="stat-label">Easy</div>
       </div>
     </div>
 
