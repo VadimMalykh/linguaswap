@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #fafafa;
+      color: #1a1a1a;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #059669, #10b981);
+      color: white;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .header p {
+      font-size: 11px;
+      opacity: 0.85;
+      margin-top: 2px;
+    }
+
+    .section {
+      padding: 16px;
+    }
+
+    .divider {
+      height: 1px;
+      background: #e5e7eb;
+      margin: 0;
+    }
+
+    /* Login form */
+    #login-form {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    #login-form label {
+      font-size: 12px;
+      font-weight: 500;
+      color: #374151;
+    }
+
+    #login-form input {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    #login-form input:focus {
+      border-color: #059669;
+      box-shadow: 0 0 0 2px rgba(5, 150, 105, 0.15);
+    }
+
+    #login-btn {
+      padding: 9px 16px;
+      background: #059669;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    #login-btn:hover { background: #047857; }
+    #login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    .error-msg {
+      background: #fef2f2;
+      color: #dc2626;
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      display: none;
+    }
+
+    /* Dashboard */
+    #dashboard { display: none; }
+
+    .user-email {
+      font-size: 12px;
+      color: #6b7280;
+      text-align: center;
+      padding: 0 16px 12px;
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 8px;
+      padding: 0 16px 12px;
+    }
+
+    .stat-card {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px;
+      text-align: center;
+    }
+
+    .stat-value {
+      font-size: 20px;
+      font-weight: 700;
+    }
+
+    .stat-value.green { color: #059669; }
+    .stat-value.blue { color: #2563eb; }
+    .stat-value.amber { color: #d97706; }
+
+    .stat-label {
+      font-size: 10px;
+      color: #6b7280;
+      margin-top: 2px;
+    }
+
+    .controls {
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+
+    .toggle-row label {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .toggle {
+      position: relative;
+      width: 40px;
+      height: 22px;
+    }
+
+    .toggle input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background: #d1d5db;
+      border-radius: 22px;
+      transition: 0.2s;
+    }
+
+    .toggle-slider::before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 2px;
+      bottom: 2px;
+      background: white;
+      border-radius: 50%;
+      transition: 0.2s;
+    }
+
+    .toggle input:checked + .toggle-slider { background: #059669; }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+    select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 13px;
+      background: white;
+      outline: none;
+    }
+
+    select:focus {
+      border-color: #059669;
+    }
+
+    .btn {
+      padding: 9px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+      text-align: center;
+    }
+
+    .btn-primary {
+      background: #059669;
+      color: white;
+    }
+    .btn-primary:hover { background: #047857; }
+
+    .btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #d1d5db;
+    }
+    .btn-secondary:hover { background: #e5e7eb; }
+
+    .btn-danger {
+      background: #fef2f2;
+      color: #dc2626;
+      border: 1px solid #fecaca;
+    }
+    .btn-danger:hover { background: #fee2e2; }
+
+    .footer {
+      padding: 12px 16px;
+      display: flex;
+      gap: 8px;
+    }
+
+    .footer .btn { flex: 1; font-size: 12px; padding: 7px 12px; }
+
+    .loading {
+      text-align: center;
+      padding: 32px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    .lang-label {
+      font-size: 11px;
+      color: #6b7280;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>LinguaSwap</h1>
+    <p>Learn languages naturally</p>
+  </div>
+
+  <div id="loading" class="loading">Loading...</div>
+
+  <div id="login-view">
+    <div class="section">
+      <form id="login-form">
+        <div id="login-error" class="error-msg"></div>
+        <label>Email</label>
+        <input type="email" id="email" placeholder="you@example.com" required>
+        <label>Password</label>
+        <input type="password" id="password" placeholder="Your password" required>
+        <button type="submit" id="login-btn">Log in</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="dashboard">
+    <div class="user-email" id="user-email"></div>
+
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-value green" id="stat-total">0</div>
+        <div class="stat-label">Total</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value blue" id="stat-known">0</div>
+        <div class="stat-label">Known</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-value amber" id="stat-learning">0</div>
+        <div class="stat-label">Learning</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <div class="toggle-row">
+        <label>Replace words</label>
+        <label class="toggle">
+          <input type="checkbox" id="toggle-enabled" checked>
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+
+      <div>
+        <div class="lang-label">Target language</div>
+        <select id="language-select">
+          <option value="en-es">English to Spanish</option>
+          <option value="en-uz">English to Uzbek</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="footer">
+      <button class="btn btn-secondary" id="dashboard-link">Dashboard</button>
+      <button class="btn btn-danger" id="logout-btn">Log out</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

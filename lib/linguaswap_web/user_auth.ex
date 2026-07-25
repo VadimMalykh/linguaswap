@@ -77,11 +77,17 @@ defmodule LinguaswapWeb.UserAuth do
             assign(conn, :current_scope, Scope.for_user(nil))
 
           token ->
-            case Accounts.get_user_by_session_token(token) do
-              {user, _token_inserted_at} ->
-                assign(conn, :current_scope, Scope.for_user(user))
+            case Base.url_decode64(token, padding: false) do
+              {:ok, decoded} ->
+                case Accounts.get_user_by_session_token(decoded) do
+                  {user, _token_inserted_at} ->
+                    assign(conn, :current_scope, Scope.for_user(user))
 
-              _ ->
+                  _ ->
+                    assign(conn, :current_scope, Scope.for_user(nil))
+                end
+
+              :error ->
                 assign(conn, :current_scope, Scope.for_user(nil))
             end
         end

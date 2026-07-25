@@ -147,4 +147,60 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert redirected_to(conn) == ~p"/email/log-in"
     end
   end
+
+  describe "POST /api/v1/auth/login" do
+    test "returns token for valid credentials" do
+      user = Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> Plug.Conn.put_private(:phoenix_endpoint, LinguaswapWeb.Endpoint)
+        |> post(~p"/api/v1/auth/login", %{
+          "email" => user.email,
+          "password" => Linguaswap.AccountsFixtures.valid_user_password()
+        })
+
+      assert %{"token" => token, "user" => %{"email" => email}} = json_response(conn, 200)
+      assert email == user.email
+      assert is_binary(token) and byte_size(token) > 0
+    end
+
+    test "returns error for invalid credentials" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> Plug.Conn.put_private(:phoenix_endpoint, LinguaswapWeb.Endpoint)
+        |> post(~p"/api/v1/auth/login", %{
+          "email" => "wrong@example.com",
+          "password" => "wrongpassword"
+        })
+
+      assert %{"error" => _} = json_response(conn, 401)
+    end
+  end
+
+  describe "Bearer token authentication" do
+    test "accesses protected endpoint with Bearer token" do
+      user = Linguaswap.AccountsFixtures.set_password(Linguaswap.AccountsFixtures.user_fixture())
+      token = Linguaswap.Accounts.generate_user_session_token(user)
+      encoded = Base.url_encode64(token, padding: false)
+
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> Plug.Conn.put_private(:phoenix_endpoint, LinguaswapWeb.Endpoint)
+        |> Plug.Conn.put_req_header("authorization", "Bearer #{encoded}")
+        |> get(~p"/api/v1/stats")
+
+      assert %{"stats" => _} = json_response(conn, 200)
+    end
+
+    test "rejects invalid Bearer token" do
+      conn =
+        Phoenix.ConnTest.build_conn()
+        |> Plug.Conn.put_private(:phoenix_endpoint, LinguaswapWeb.Endpoint)
+        |> Plug.Conn.put_req_header("authorization", "Bearer invalidtoken123")
+        |> get(~p"/api/v1/stats")
+
+      assert redirected_to(conn) == ~p"/email/log-in"
+    end
+  end
 end

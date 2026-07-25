@@ -1,0 +1,36 @@
+.linguaswap-word {
+  display: inline;
+  padding: 0 2px;
+  border-radius: 3px;
+  cursor: help;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.ls-status-new {
+  background-color: rgba(99, 102, 241, 0.12);
+  border-bottom: 1.5px dashed rgba(99, 102, 241, 0.5);
+  color: inherit;
+}
+
+.ls-status-learning {
+  background-color: rgba(245, 158, 11, 0.12);
+  border-bottom: 1.5px dashed rgba(245, 158, 11, 0.5);
+  color: inherit;
+}
+
+.ls-status-known {
+  background-color: rgba(16, 185, 129, 0.10);
+  border-bottom: 1px solid rgba(16, 185, 129, 0.3);
+  color: inherit;
+}
+
+.linguaswap-word:hover {
+  filter: brightness(0.92);
+}
+
+.ls-revealed {
+  background-color: rgba(99, 102, 241, 0.18) !important;
+  border-bottom-color: rgba(99, 102, 241, 0.6) !important;
+  font-style: italic;
+}
