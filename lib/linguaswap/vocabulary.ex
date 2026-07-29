@@ -200,7 +200,6 @@ defmodule Linguaswap.Vocabulary do
       left_join: uw in UserWord,
       on: w.id == uw.word_id and uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
-      where: is_nil(uw.id) or uw.status in ["hard", "simple"],
       select: %{word: w, user_word: uw}
     )
     |> Repo.all()

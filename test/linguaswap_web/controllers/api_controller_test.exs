@@ -33,7 +33,7 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert %{"words" => []} = json_response(conn, 200)
     end
 
-    test "excludes trivial words", %{conn: conn, user: user} do
+    test "includes trivial words", %{conn: conn, user: user} do
       {:ok, word} =
         Vocabulary.create_word(%{
           original_word: "hello",
@@ -45,7 +45,8 @@ defmodule LinguaswapWeb.ApiControllerTest do
       Vocabulary.rate_word(user.id, word.id, "trivial")
 
       conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
-      assert %{"words" => []} = json_response(conn, 200)
+      assert %{"words" => [word_data]} = json_response(conn, 200)
+      assert word_data["status"] == "trivial"
     end
   end
 

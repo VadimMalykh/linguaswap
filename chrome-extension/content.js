@@ -8,6 +8,7 @@
   let startTime = Date.now();
   let processedNodes = new WeakSet();
   let activePopup = null;
+  let mutationTimer = null;
 
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT",
@@ -30,6 +31,15 @@
       }
     });
   });
+
+  const observer = new MutationObserver(() => {
+    if (!enabled) return;
+    if (mutationTimer) clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(() => {
+      walkAndReplace(document.body);
+    }, 400);
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TOGGLE_ENABLED") {
@@ -70,6 +80,7 @@
         }
 
         walkAndReplace(document.body);
+        setTimeout(() => walkAndReplace(document.body), 1500);
         reportPageVisit();
       }
     );
@@ -142,6 +153,7 @@
     span.className = "linguaswap-word";
     span.dataset.linguaswap = "true";
     span.dataset.original = cleanWord;
+    span.dataset.originalLower = cleanWord.toLowerCase();
     span.dataset.translation = wordData.translation;
     span.dataset.status = wordData.status;
 
@@ -244,13 +256,19 @@
   function rateWord(span, word, status) {
     span.dataset.status = status;
 
-    span.classList.remove("ls-status-hard", "ls-status-simple", "ls-status-trivial");
-    if (status === "hard") {
-      span.classList.add("ls-status-hard");
-    } else if (status === "simple") {
-      span.classList.add("ls-status-simple");
-    } else {
-      span.classList.add("ls-status-trivial");
+    updateSpanStatusClass(span, status);
+
+    if (wordMap[word]) {
+      wordMap[word].status = status;
+    }
+
+    const lower = word.toLowerCase();
+    const all = document.querySelectorAll(`span.linguaswap-word[data-original="${lower}" i]`);
+    for (const el of all) {
+      if (el !== span) {
+        el.dataset.status = status;
+        updateSpanStatusClass(el, status);
+      }
     }
 
     chrome.runtime.sendMessage({
@@ -261,6 +279,17 @@
     });
 
     removeActivePopup();
+  }
+
+  function updateSpanStatusClass(el, status) {
+    el.classList.remove("ls-status-hard", "ls-status-simple", "ls-status-trivial");
+    if (status === "hard") {
+      el.classList.add("ls-status-hard");
+    } else if (status === "simple") {
+      el.classList.add("ls-status-simple");
+    } else {
+      el.classList.add("ls-status-trivial");
+    }
   }
 
   function removeAllReplacements() {

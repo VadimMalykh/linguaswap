@@ -52,7 +52,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "RATE_WORD") {
     handleRateWord(message.word, message.languagePair, message.status)
-      .then(() => sendResponse({ ok: true }))
+      .then(() => {
+        cachedWords = null;
+        cachedLanguagePair = null;
+        sendResponse({ ok: true });
+      })
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }

@@ -370,7 +370,7 @@ defmodule Linguaswap.VocabularyTest do
   end
 
   describe "get_words_for_replacement/2" do
-    test "returns hard, simple, and unseen words but not trivial" do
+    test "returns all words including trivial" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word1} =
@@ -402,7 +402,7 @@ defmodule Linguaswap.VocabularyTest do
 
       results = Vocabulary.get_words_for_replacement(user.id, "en-es")
       original_words = Enum.map(results, & &1.word.original_word) |> Enum.sort()
-      assert Enum.sort(["hello", "foo"]) == original_words
+      assert Enum.sort(["hello", "world", "foo"]) == original_words
     end
 
     test "filters by language_pair" do
