@@ -77,12 +77,12 @@ document.addEventListener("DOMContentLoaded", () => {
     const enabled = toggleEnabled.checked;
     saveSettings({ enabled });
 
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, {
+    chrome.tabs.query({}, (tabs) => {
+      for (const tab of tabs) {
+        chrome.tabs.sendMessage(tab.id, {
           type: "TOGGLE_ENABLED",
           enabled,
-        });
+        }, () => { if (chrome.runtime.lastError) { /* ignore */ } });
       }
     });
   });
@@ -98,13 +98,13 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, {
+    chrome.tabs.query({}, (tabs) => {
+      for (const tab of tabs) {
+        chrome.tabs.sendMessage(tab.id, {
           type: "SETTINGS_CHANGED",
           languagePair,
           enabled: toggleEnabled.checked,
-        });
+        }, () => { if (chrome.runtime.lastError) { /* ignore */ } });
       }
     });
   });

@@ -298,7 +298,7 @@
       const parent = span.parentNode;
       if (!parent) continue;
 
-      const textNode = document.createTextNode(span.textContent);
+      const textNode = document.createTextNode(span.dataset.original || span.textContent);
       parent.replaceChild(textNode, span);
       parent.normalize();
     }
