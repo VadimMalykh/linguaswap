@@ -9,6 +9,8 @@
   let processedNodes = new WeakSet();
   let activePopup = null;
   let mutationTimer = null;
+  let titleElement = null;
+  let currentTitleVideoId = null;
 
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT",
@@ -50,6 +52,15 @@
 
   const observer = new MutationObserver((mutations) => {
     if (!enabled) return;
+
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      pendingMutations = [];
+      if (mutationTimer) clearTimeout(mutationTimer);
+      handleNavigation();
+      return;
+    }
+
     pendingMutations = pendingMutations.concat(mutations);
     if (mutationTimer) clearTimeout(mutationTimer);
     mutationTimer = setTimeout(() => {
@@ -91,12 +102,7 @@
       }
     }
 
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      startTime = Date.now();
-      replacementCount = 0;
-      containers.add(document.body);
-    }
+    translateTitle();
 
     for (const container of containers) {
       if (container && container.nodeType === Node.ELEMENT_NODE) {
@@ -119,8 +125,12 @@
     replacementCount = 0;
 
     try {
+      translateTitle();
       walkAndReplace(document.body);
-      setTimeout(() => walkAndReplace(document.body), 800);
+      setTimeout(() => {
+        translateTitle();
+        walkAndReplace(document.body);
+      }, 800);
     } catch (err) {
       // Ignore DOM edge cases from arbitrary pages.
     }
@@ -167,48 +177,156 @@
           };
         }
 
+        translateTitle();
         walkAndReplace(document.body);
-        setTimeout(() => walkAndReplace(document.body), 1500);
+        setTimeout(() => {
+          translateTitle();
+          walkAndReplace(document.body);
+        }, 1500);
         reportPageVisit();
       }
     );
   }
 
-  function containerFingerprint(node) {
-    let out = "";
-    const childNodes = node.childNodes;
-    for (let i = 0; i < childNodes.length; i++) {
-      const child = childNodes[i];
-      if (child.nodeType === Node.TEXT_NODE) {
-        out += child.textContent;
-      } else if (
-        child.nodeType === Node.ELEMENT_NODE &&
-        child.classList &&
-        child.classList.contains("linguaswap-run")
-      ) {
-        out += child.dataset.originalFull || child.textContent;
+  function findTitle() {
+    return (
+      document.querySelector(
+        "h1.title.ytd-watch-metadata yt-formatted-string, " +
+          "#title h1 yt-formatted-string, " +
+          "h1.title yt-formatted-string"
+      ) || null
+    );
+  }
+
+  function translateString(text) {
+    if (!text) return null;
+
+    const words = text.split(/(\s+)/);
+    let changed = false;
+    const out = [];
+
+    for (const segment of words) {
+      if (/^\s+$/.test(segment)) {
+        out.push(segment);
+        continue;
+      }
+
+      const clean = segment.replace(/[^\w']/g, "");
+      const lower = clean.toLowerCase();
+
+      if (wordMap[lower]) {
+        out.push(wordMap[lower].translation);
+        changed = true;
       } else {
-        out += child.textContent;
+        out.push(segment);
       }
     }
-    return out;
+
+    return changed ? out.join("") : null;
+  }
+
+  function getVideoId() {
+    try {
+      const url = new URL(window.location.href);
+      const v = url.searchParams.get("v");
+      if (v) return v;
+      const m = url.pathname.match(/^\/(shorts|live|embed)\/([^/]+)/);
+      if (m) return m[2];
+    } catch (err) {
+      // ignore
+    }
+    return window.location.pathname + window.location.search;
+  }
+
+  function translateTitle() {
+    const el = findTitle();
+    titleElement = el;
+    if (!el) return;
+
+    const vid = getVideoId();
+    const videoChanged = vid !== currentTitleVideoId;
+    if (videoChanged) {
+      currentTitleVideoId = vid;
+      delete el.dataset.lsOriginal;
+      delete el.dataset.lsTranslated;
+    }
+
+    const raw = el.textContent;
+    if (raw === el.dataset.lsOriginal || raw === el.dataset.lsTranslated) return;
+
+    let pageTitle = document.title.replace(/\s+-\s+YouTube\s*$/, "").trim();
+    if (!pageTitle || pageTitle === "YouTube") pageTitle = "";
+
+    let sourceText = raw;
+    if (pageTitle) {
+      if (videoChanged) {
+        sourceText = pageTitle;
+      } else if (!raw || raw.includes(pageTitle) || pageTitle.includes(raw)) {
+        sourceText = pageTitle;
+      }
+    }
+
+    const translated = translateString(sourceText);
+    if (!translated) return;
+
+    el.dataset.lsOriginal = sourceText;
+    el.dataset.lsTranslated = translated;
+
+    if (!el.dataset.lsHover) {
+      el.dataset.lsHover = "1";
+      el.addEventListener("mouseenter", () => {
+        if (el.textContent === el.dataset.lsTranslated && el.dataset.lsOriginal) {
+          el.textContent = el.dataset.lsOriginal;
+        }
+      });
+      el.addEventListener("mouseleave", () => {
+        if (el.textContent === el.dataset.lsOriginal && el.dataset.lsTranslated) {
+          el.textContent = el.dataset.lsTranslated;
+        }
+      });
+    }
+
+    el.textContent = translated;
+  }
+
+  function isPlainWrapped(node) {
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) continue;
+      if (
+        child.nodeType === Node.ELEMENT_NODE &&
+        child.classList &&
+        child.classList.contains("linguaswap-word")
+      ) {
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  function restoreWordSpans(node) {
+    const spans = node.querySelectorAll("span.linguaswap-word");
+    for (const span of spans) {
+      const parent = span.parentNode;
+      if (!parent) continue;
+      const textNode = document.createTextNode(span.dataset.original || span.textContent);
+      parent.replaceChild(textNode, span);
+    }
   }
 
   function walkAndReplace(node) {
     if (!node || !enabled) return;
 
     if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node === titleElement) return;
       if (SKIP_TAGS.has(node.tagName)) return;
       if (node.classList && SKIP_CLASSES.test(node.className)) return;
       if (node.isContentEditable) return;
       if (node.dataset && node.dataset.linguaswap) return;
 
       const snapshot = wrappedContainers.get(node);
-      if (snapshot !== undefined && snapshot !== containerFingerprint(node)) {
-        const stale = node.querySelectorAll("span.linguaswap-run");
-        for (const run of stale) {
-          if (run.parentNode) run.parentNode.removeChild(run);
-        }
+      if (snapshot !== undefined && node.textContent !== snapshot) {
+        restoreWordSpans(node);
         wrappedContainers.delete(node);
       }
 
@@ -227,6 +345,7 @@
   function replaceWordsInTextNode(textNode) {
     if (processedNodes.has(textNode)) return;
     if (!textNode.textContent.trim()) return;
+    if (textNode.parentNode === titleElement) return;
 
     const text = textNode.textContent;
     const words = text.split(/(\s+)/);
@@ -257,20 +376,14 @@
       const parent = textNode.parentNode;
       if (!parent) return;
 
-      const run = document.createElement("span");
-      run.className = "linguaswap-run";
-      run.dataset.linguaswap = "true";
-      run.dataset.originalFull = text;
       for (const frag of fragments) {
-        run.appendChild(frag);
+        parent.insertBefore(frag, textNode);
       }
-
-      parent.insertBefore(run, textNode);
       parent.removeChild(textNode);
       processedNodes.add(textNode);
 
-      if (parent.childNodes.length === 1) {
-        wrappedContainers.set(parent, containerFingerprint(parent));
+      if (isPlainWrapped(parent)) {
+        wrappedContainers.set(parent, parent.textContent);
       }
     }
   }
@@ -420,16 +533,6 @@
   }
 
   function removeAllReplacements() {
-    const runs = document.querySelectorAll("span.linguaswap-run");
-    for (const run of runs) {
-      const parent = run.parentNode;
-      if (!parent) continue;
-
-      const textNode = document.createTextNode(run.dataset.originalFull || run.textContent);
-      parent.replaceChild(textNode, run);
-      parent.normalize();
-    }
-
     const replacements = document.querySelectorAll("span.linguaswap-word");
     for (const span of replacements) {
       const parent = span.parentNode;
@@ -438,6 +541,16 @@
       const textNode = document.createTextNode(span.dataset.original || span.textContent);
       parent.replaceChild(textNode, span);
       parent.normalize();
+    }
+
+    const title = findTitle();
+    if (title && title.dataset.lsOriginal) {
+      title.textContent = title.dataset.lsOriginal;
+    }
+    if (title) {
+      delete title.dataset.lsOriginal;
+      delete title.dataset.lsTranslated;
+      delete title.dataset.lsHover;
     }
 
     wrappedContainers = new WeakMap();
