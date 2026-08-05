@@ -18,7 +18,19 @@
 
   const SKIP_CLASSES = /linguaswap|CodeMirror|hljs/;
 
-  chrome.runtime.sendMessage({ type: "GET_STATUS" }, (response) => {
+  function safeSendMessage(message, callback) {
+    try {
+      if (callback) {
+        chrome.runtime.sendMessage(message, callback);
+      } else {
+        chrome.runtime.sendMessage(message);
+      }
+    } catch (err) {
+      // Extension context may be invalidated after a reload; ignore.
+    }
+  }
+
+  safeSendMessage({ type: "GET_STATUS" }, (response) => {
     if (!response || !response.loggedIn) return;
 
     chrome.storage.local.get("settings", (data) => {
@@ -33,15 +45,21 @@
   });
 
   let pendingMutations = [];
+  let lastUrl = window.location.href;
+  let wrappedContainers = new WeakMap();
 
   const observer = new MutationObserver((mutations) => {
     if (!enabled) return;
     pendingMutations = pendingMutations.concat(mutations);
     if (mutationTimer) clearTimeout(mutationTimer);
     mutationTimer = setTimeout(() => {
-      const batch = pendingMutations;
-      pendingMutations = [];
-      syncChangedSubtrees(batch);
+      try {
+        const batch = pendingMutations;
+        pendingMutations = [];
+        syncChangedSubtrees(batch);
+      } catch (err) {
+        // Ignore DOM edge cases from arbitrary pages.
+      }
     }, 400);
   });
   observer.observe(document.documentElement, {
@@ -73,6 +91,13 @@
       }
     }
 
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      startTime = Date.now();
+      replacementCount = 0;
+      containers.add(document.body);
+    }
+
     for (const container of containers) {
       if (container && container.nodeType === Node.ELEMENT_NODE) {
         walkAndReplace(container);
@@ -89,39 +114,21 @@
     if (now - lastNavigationReset < 1500) return;
     lastNavigationReset = now;
 
+    lastUrl = window.location.href;
     startTime = now;
     replacementCount = 0;
 
-    if (Object.keys(wordMap).length === 0) {
-      loadWordsAndReplace();
-      return;
+    try {
+      walkAndReplace(document.body);
+      setTimeout(() => walkAndReplace(document.body), 800);
+    } catch (err) {
+      // Ignore DOM edge cases from arbitrary pages.
     }
-
-    removeAllReplacements();
-    walkAndReplace(document.body);
-    setTimeout(() => walkAndReplace(document.body), 800);
   }
 
   window.addEventListener("yt-navigate-finish", handleNavigation);
   window.addEventListener("popstate", handleNavigation);
   window.addEventListener("hashchange", handleNavigation);
-
-  const originalPushState = history.pushState;
-  const originalReplaceState = history.replaceState;
-
-  history.pushState = function (...args) {
-    const result = originalPushState.apply(this, args);
-    window.dispatchEvent(new Event("linguaswap:navigate"));
-    return result;
-  };
-
-  history.replaceState = function (...args) {
-    const result = originalReplaceState.apply(this, args);
-    window.dispatchEvent(new Event("linguaswap:navigate"));
-    return result;
-  };
-
-  window.addEventListener("linguaswap:navigate", handleNavigation);
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TOGGLE_ENABLED") {
@@ -146,7 +153,7 @@
   });
 
   function loadWordsAndReplace() {
-    chrome.runtime.sendMessage(
+    safeSendMessage(
       { type: "GET_WORDS", languagePair },
       (response) => {
         if (!response || !response.ok || !response.words) return;
@@ -167,6 +174,26 @@
     );
   }
 
+  function containerFingerprint(node) {
+    let out = "";
+    const childNodes = node.childNodes;
+    for (let i = 0; i < childNodes.length; i++) {
+      const child = childNodes[i];
+      if (child.nodeType === Node.TEXT_NODE) {
+        out += child.textContent;
+      } else if (
+        child.nodeType === Node.ELEMENT_NODE &&
+        child.classList &&
+        child.classList.contains("linguaswap-run")
+      ) {
+        out += child.dataset.originalFull || child.textContent;
+      } else {
+        out += child.textContent;
+      }
+    }
+    return out;
+  }
+
   function walkAndReplace(node) {
     if (!node || !enabled) return;
 
@@ -175,6 +202,15 @@
       if (node.classList && SKIP_CLASSES.test(node.className)) return;
       if (node.isContentEditable) return;
       if (node.dataset && node.dataset.linguaswap) return;
+
+      const snapshot = wrappedContainers.get(node);
+      if (snapshot !== undefined && snapshot !== containerFingerprint(node)) {
+        const stale = node.querySelectorAll("span.linguaswap-run");
+        for (const run of stale) {
+          if (run.parentNode) run.parentNode.removeChild(run);
+        }
+        wrappedContainers.delete(node);
+      }
 
       const children = Array.from(node.childNodes);
       for (const child of children) {
@@ -221,11 +257,21 @@
       const parent = textNode.parentNode;
       if (!parent) return;
 
+      const run = document.createElement("span");
+      run.className = "linguaswap-run";
+      run.dataset.linguaswap = "true";
+      run.dataset.originalFull = text;
       for (const frag of fragments) {
-        parent.insertBefore(frag, textNode);
+        run.appendChild(frag);
       }
+
+      parent.insertBefore(run, textNode);
       parent.removeChild(textNode);
       processedNodes.add(textNode);
+
+      if (parent.childNodes.length === 1) {
+        wrappedContainers.set(parent, containerFingerprint(parent));
+      }
     }
   }
 
@@ -257,7 +303,7 @@
         span.dataset.displayText = span.textContent;
         span.textContent = cleanWord;
 
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: "RECORD_REVEAL",
           word: cleanWord,
           languagePair,
@@ -352,7 +398,7 @@
       }
     }
 
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: "RATE_WORD",
       word,
       languagePair,
@@ -374,6 +420,16 @@
   }
 
   function removeAllReplacements() {
+    const runs = document.querySelectorAll("span.linguaswap-run");
+    for (const run of runs) {
+      const parent = run.parentNode;
+      if (!parent) continue;
+
+      const textNode = document.createTextNode(run.dataset.originalFull || run.textContent);
+      parent.replaceChild(textNode, run);
+      parent.normalize();
+    }
+
     const replacements = document.querySelectorAll("span.linguaswap-word");
     for (const span of replacements) {
       const parent = span.parentNode;
@@ -383,6 +439,8 @@
       parent.replaceChild(textNode, span);
       parent.normalize();
     }
+
+    wrappedContainers = new WeakMap();
   }
 
   let visitTimer = null;
@@ -393,7 +451,7 @@
     visitTimer = setInterval(() => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       if (replacementCount > 0 && elapsed >= 5) {
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: "RECORD_PAGE_VISIT",
           url: window.location.href,
           wordsReplaced: replacementCount,
@@ -406,7 +464,7 @@
     window.addEventListener("beforeunload", () => {
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       if (replacementCount > 0) {
-        chrome.runtime.sendMessage({
+        safeSendMessage({
           type: "RECORD_PAGE_VISIT",
           url: window.location.href,
           wordsReplaced: replacementCount,
