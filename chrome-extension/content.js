@@ -32,14 +32,96 @@
     });
   });
 
-  const observer = new MutationObserver(() => {
+  let pendingMutations = [];
+
+  const observer = new MutationObserver((mutations) => {
     if (!enabled) return;
+    pendingMutations = pendingMutations.concat(mutations);
     if (mutationTimer) clearTimeout(mutationTimer);
     mutationTimer = setTimeout(() => {
-      walkAndReplace(document.body);
+      const batch = pendingMutations;
+      pendingMutations = [];
+      syncChangedSubtrees(batch);
     }, 400);
   });
-  observer.observe(document.documentElement, { childList: true, subtree: true });
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+
+  function syncChangedSubtrees(mutations) {
+    const containers = new Set();
+
+    for (const mutation of mutations) {
+      if (mutation.type === "characterData") {
+        if (mutation.target.parentNode) {
+          containers.add(mutation.target.parentNode);
+        }
+        continue;
+      }
+
+      if (mutation.type === "childList") {
+        if (mutation.target && mutation.target.nodeType === Node.ELEMENT_NODE) {
+          containers.add(mutation.target);
+        }
+        for (const node of mutation.addedNodes) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            containers.add(node);
+          }
+        }
+      }
+    }
+
+    for (const container of containers) {
+      if (container && container.nodeType === Node.ELEMENT_NODE) {
+        walkAndReplace(container);
+      }
+    }
+  }
+
+  let lastNavigationReset = 0;
+
+  function handleNavigation() {
+    if (!enabled) return;
+
+    const now = Date.now();
+    if (now - lastNavigationReset < 1500) return;
+    lastNavigationReset = now;
+
+    startTime = now;
+    replacementCount = 0;
+
+    if (Object.keys(wordMap).length === 0) {
+      loadWordsAndReplace();
+      return;
+    }
+
+    removeAllReplacements();
+    walkAndReplace(document.body);
+    setTimeout(() => walkAndReplace(document.body), 800);
+  }
+
+  window.addEventListener("yt-navigate-finish", handleNavigation);
+  window.addEventListener("popstate", handleNavigation);
+  window.addEventListener("hashchange", handleNavigation);
+
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+
+  history.pushState = function (...args) {
+    const result = originalPushState.apply(this, args);
+    window.dispatchEvent(new Event("linguaswap:navigate"));
+    return result;
+  };
+
+  history.replaceState = function (...args) {
+    const result = originalReplaceState.apply(this, args);
+    window.dispatchEvent(new Event("linguaswap:navigate"));
+    return result;
+  };
+
+  window.addEventListener("linguaswap:navigate", handleNavigation);
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message.type === "TOGGLE_ENABLED") {
@@ -54,7 +136,6 @@
     if (message.type === "SETTINGS_CHANGED") {
       languagePair = message.languagePair || languagePair;
       enabled = message.enabled !== undefined ? message.enabled : enabled;
-      cachedWords = null;
 
       if (!enabled) {
         removeAllReplacements();
