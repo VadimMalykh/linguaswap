@@ -238,55 +238,103 @@
     return window.location.pathname + window.location.search;
   }
 
+  let titleCheckTimer = null;
+  let titleCheckCount = 0;
+
+  function scheduleTitleCheck() {
+    if (titleCheckTimer) return;
+    titleCheckTimer = setTimeout(() => {
+      titleCheckTimer = null;
+      translateTitle();
+    }, 300);
+  }
+
+  // Trace logging for the title pipeline. Behind a flag we can flip to true
+  // once, so we do not spam the console in normal operation.
+  let titleDebug = true;
+
+  function tlog(...args) {
+    if (titleDebug) console.log("LS-TITLE", ...args);
+  }
+
+  // The last translated title string we wrote into {@link titleElement}. Survives
+  // navigation even though {...} DOM data-* attributes are wiped on the reused h1.
+  // Used to tell "stale text we left behind on the previous video" apart from a
+  // freshly-rendered original title for the current video.
+  let lastRenderedTitle = null;
+
   function translateTitle() {
     const el = findTitle();
     titleElement = el;
-    if (!el) return;
+    if (!el) {
+      tlog("no title element");
+      return;
+    }
 
     const vid = getVideoId();
-    const videoChanged = vid !== currentTitleVideoId;
-    if (videoChanged) {
+    const current = (el.textContent || "").trim();
+    tlog("enter", { vid, currentTitleVideoId, current, lastRenderedTitle });
+
+    if (!current) {
+      tlog("empty, wait");
+      scheduleTitleCheck();
+      return;
+    }
+
+    if (vid !== currentTitleVideoId) {
       currentTitleVideoId = vid;
-      delete el.dataset.lsOriginal;
-      delete el.dataset.lsTranslated;
-    }
-
-    const raw = el.textContent;
-    if (raw === el.dataset.lsOriginal || raw === el.dataset.lsTranslated) return;
-
-    let pageTitle = document.title.replace(/\s+-\s+YouTube\s*$/, "").trim();
-    if (!pageTitle || pageTitle === "YouTube") pageTitle = "";
-
-    let sourceText = raw;
-    if (pageTitle) {
-      if (videoChanged) {
-        sourceText = pageTitle;
-      } else if (!raw || raw.includes(pageTitle) || pageTitle.includes(raw)) {
-        sourceText = pageTitle;
+      tlog("video changed ->", vid, "current=", current, "last=", lastRenderedTitle);
+      if (current === lastRenderedTitle) {
+        tlog("still showing previous render, wait");
+        scheduleTitleCheck();
+        return;
       }
+
+      const translated = translateString(current);
+      tlog("new-video translate", { current, translated });
+      if (translated) {
+        writeTitle(el, current, translated);
+      }
+      return;
     }
 
-    const translated = translateString(sourceText);
+    if (current === lastRenderedTitle) {
+      tlog("already rendered, skip");
+      return;
+    }
+
+    const translated = translateString(current);
+    tlog("same-video translate", { current, translated });
     if (!translated) return;
 
-    el.dataset.lsOriginal = sourceText;
-    el.dataset.lsTranslated = translated;
+    writeTitle(el, current, translated);
+  }
 
-    if (!el.dataset.lsHover) {
-      el.dataset.lsHover = "1";
-      el.addEventListener("mouseenter", () => {
-        if (el.textContent === el.dataset.lsTranslated && el.dataset.lsOriginal) {
-          el.textContent = el.dataset.lsOriginal;
-        }
-      });
-      el.addEventListener("mouseleave", () => {
-        if (el.textContent === el.dataset.lsOriginal && el.dataset.lsTranslated) {
-          el.textContent = el.dataset.lsTranslated;
-        }
-      });
-    }
-
+  function writeTitle(el, original, translated) {
+    lastRenderedTitle = translated;
     el.textContent = translated;
+    tlog("WROTE title:", translated, "(orig:", original + ")");
+
+    if (el.dataset.lsOriginal !== original || el.dataset.lsTranslated !== translated) {
+      el.dataset.lsOriginal = original;
+      el.dataset.lsTranslated = translated;
+      attachTitleHover(el);
+    }
+  }
+
+  function attachTitleHover(el) {
+    if (el.dataset.lsHover) return;
+    el.dataset.lsHover = "1";
+    el.addEventListener("mouseenter", () => {
+      if (el.textContent === el.dataset.lsTranslated && el.dataset.lsOriginal) {
+        el.textContent = el.dataset.lsOriginal;
+      }
+    });
+    el.addEventListener("mouseleave", () => {
+      if (el.textContent === el.dataset.lsOriginal && el.dataset.lsTranslated) {
+        el.textContent = el.dataset.lsTranslated;
+      }
+    });
   }
 
   function isPlainWrapped(node) {
@@ -553,6 +601,7 @@
       delete title.dataset.lsHover;
     }
 
+    lastRenderedTitle = null;
     wrappedContainers = new WeakMap();
   }
 
