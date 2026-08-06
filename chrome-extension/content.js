@@ -20,6 +20,8 @@
 
   const SKIP_CLASSES = /linguaswap|CodeMirror|hljs/;
 
+  console.log("LinguaSwap content script loaded (title-fix v2)");
+
   function safeSendMessage(message, callback) {
     try {
       if (callback) {
@@ -53,6 +55,15 @@
   const observer = new MutationObserver((mutations) => {
     if (!enabled) return;
 
+    // YouTube re-renders <yt-formatted-string> and re-adds is-empty="" on nodes
+    // whose text we set directly, hiding our translated title. Clear it eagerly
+    // whenever it appears on an element that actually has content.
+    for (const mutation of mutations) {
+      if (mutation.type === "attributes" && mutation.attributeName === "is-empty") {
+        clearIsEmpty(mutation.target);
+      }
+    }
+
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
       pendingMutations = [];
@@ -77,7 +88,16 @@
     childList: true,
     subtree: true,
     characterData: true,
+    attributes: true,
+    attributeFilter: ["is-empty"],
   });
+
+  function clearIsEmpty(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return;
+    if (!el.hasAttribute("is-empty")) return;
+    if (!el.textContent || !el.textContent.trim()) return;
+    el.removeAttribute("is-empty");
+  }
 
   function syncChangedSubtrees(mutations) {
     const containers = new Set();
@@ -136,6 +156,35 @@
     }
   }
 
+  function resetTitleBeforeNavigation() {
+    // YouTube reuses the same h1 DOM node across SPA navigations. Before it
+    // re-renders the title for the next video, restore whatever we last wrote
+    // back to the pristine original. Otherwise YouTube APPENDS the new video's
+    // title onto our leftover translated text node, producing a combined title.
+    if (titleCheckTimer) {
+      clearTimeout(titleCheckTimer);
+      titleCheckTimer = null;
+    }
+
+    const el = findTitle();
+    if (!el) return;
+    
+    // Try to reset to original. Even if this fails (race condition where YouTube
+    // already appended), the stripping logic in translateTitle will handle it.
+    if (lastOriginalTitle && el.textContent === lastRenderedTitle) {
+      el.textContent = lastOriginalTitle;
+      tlog("reset to original before navigation:", lastOriginalTitle);
+    }
+    
+    delete el.dataset.lsOriginal;
+    delete el.dataset.lsTranslated;
+    delete el.dataset.lsHover;
+    
+    // Keep lastRenderedTitle/lastOriginalTitle so the stripping logic can work.
+    // They will be cleared after successfully handling the new video's title.
+  }
+
+  window.addEventListener("yt-navigate-start", resetTitleBeforeNavigation);
   window.addEventListener("yt-navigate-finish", handleNavigation);
   window.addEventListener("popstate", handleNavigation);
   window.addEventListener("hashchange", handleNavigation);
@@ -239,7 +288,8 @@
   }
 
   let titleCheckTimer = null;
-  let titleCheckCount = 0;
+  let titleMutationObserver = null;
+  let titleDebounceTimer = null;
 
   function scheduleTitleCheck() {
     if (titleCheckTimer) return;
@@ -247,6 +297,33 @@
       titleCheckTimer = null;
       translateTitle();
     }, 300);
+  }
+
+  function watchTitleElement(el) {
+    // Stop watching previous element
+    if (titleMutationObserver) {
+      titleMutationObserver.disconnect();
+      titleMutationObserver = null;
+    }
+    
+    if (!el) return;
+    
+    // Watch for YouTube mutating the title text
+    titleMutationObserver = new MutationObserver(() => {
+      // Debounce: wait for YouTube to finish mutating (500ms of silence)
+      if (titleDebounceTimer) clearTimeout(titleDebounceTimer);
+      titleDebounceTimer = setTimeout(() => {
+        titleDebounceTimer = null;
+        tlog("title mutations settled, translating");
+        translateTitle();
+      }, 500);
+    });
+    
+    titleMutationObserver.observe(el, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
   }
 
   // Trace logging for the title pipeline. Behind a flag we can flip to true
@@ -257,15 +334,22 @@
     if (titleDebug) console.log("LS-TITLE", ...args);
   }
 
-  // The last translated title string we wrote into {@link titleElement}. Survives
-  // navigation even though {...} DOM data-* attributes are wiped on the reused h1.
-  // Used to tell "stale text we left behind on the previous video" apart from a
-  // freshly-rendered original title for the current video.
+  // The last translated / original title strings we wrote into
+  // {@link titleElement}. They survive navigation even though {...} DOM data-*
+  // attributes are wiped on the reused h1, so we can tell "text left behind on
+  // the previous video" apart from a freshly-rendered title for the current one.
   let lastRenderedTitle = null;
+  let lastOriginalTitle = null;
 
   function translateTitle() {
     const el = findTitle();
-    titleElement = el;
+    
+    // Set up observer on new title element
+    if (el !== titleElement) {
+      titleElement = el;
+      watchTitleElement(el);
+    }
+    
     if (!el) {
       tlog("no title element");
       return;
@@ -281,19 +365,39 @@
       return;
     }
 
+    // YouTube reuses the same node across SPA navigations and APPENDS the newly
+    // rendered title onto whatever text we left behind (translated or original).
+    // Strip that stale prefix so we only handle the actual new title.
+    let effective = current;
+    let stripped = false;
+
+    if (lastRenderedTitle && effective !== lastRenderedTitle && effective.startsWith(lastRenderedTitle)) {
+      effective = effective.slice(lastRenderedTitle.length).trim();
+      stripped = true;
+      tlog("stripped translated prefix ->", effective);
+    } else if (lastOriginalTitle && effective !== lastOriginalTitle && effective.startsWith(lastOriginalTitle)) {
+      effective = effective.slice(lastOriginalTitle.length).trim();
+      stripped = true;
+      tlog("stripped original prefix ->", effective);
+    }
+
     if (vid !== currentTitleVideoId) {
       currentTitleVideoId = vid;
       tlog("video changed ->", vid, "current=", current, "last=", lastRenderedTitle);
-      if (current === lastRenderedTitle) {
-        tlog("still showing previous render, wait");
+      // The reused h1 may still hold the previous video's text, either as our
+      // own translated output or as YouTube's untouched original. Accept the
+      // node only once it differs from BOTH, otherwise wait for fresh content.
+      if (current === lastRenderedTitle || current === lastOriginalTitle) {
+        tlog("still showing previous video content, wait");
         scheduleTitleCheck();
         return;
       }
 
-      const translated = translateString(current);
-      tlog("new-video translate", { current, translated });
-      if (translated) {
-        writeTitle(el, current, translated);
+      const target = effective || current;
+      const translated = translateString(target);
+      tlog("new-video translate", { current, effective, translated });
+      if (translated || stripped) {
+        writeTitle(el, target, translated || target);
       }
       return;
     }
@@ -303,22 +407,41 @@
       return;
     }
 
-    const translated = translateString(current);
-    tlog("same-video translate", { current, translated });
-    if (!translated) return;
+    const target = effective || current;
+    const translated = translateString(target);
+    tlog("same-video translate", { current, effective, translated });
+    if (!translated && !stripped) return;
 
-    writeTitle(el, current, translated);
+    writeTitle(el, target, translated || target);
   }
 
   function writeTitle(el, original, translated) {
     lastRenderedTitle = translated;
+    lastOriginalTitle = original;
+    
+    // Temporarily disconnect observer so we don't trigger on our own write
+    const wasObserving = titleMutationObserver !== null;
+    if (wasObserving && titleMutationObserver) {
+      titleMutationObserver.disconnect();
+    }
+    
     el.textContent = translated;
+    // YouTube's <yt-formatted-string> toggles the `is-empty` attribute itself
+    // when it fills the title; writing textContent directly bypasses that, which
+    // leaves the element marked empty and YouTube hides it (blank title). Clear
+    // it whenever we write, so the title is actually rendered.
+    el.removeAttribute("is-empty");
     tlog("WROTE title:", translated, "(orig:", original + ")");
 
     if (el.dataset.lsOriginal !== original || el.dataset.lsTranslated !== translated) {
       el.dataset.lsOriginal = original;
       el.dataset.lsTranslated = translated;
       attachTitleHover(el);
+    }
+    
+    // Reconnect observer to watch for YouTube's changes
+    if (wasObserving) {
+      watchTitleElement(el);
     }
   }
 
@@ -362,11 +485,27 @@
     }
   }
 
+  function isInsideTitle(node) {
+    if (node === titleElement) return true;
+    let el = node.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+    while (el && el.nodeType === Node.ELEMENT_NODE) {
+      if (el === titleElement) return true;
+      // Title lives under an <h1> carrying the "title" class. Guard by selector
+      // too, so the body word-walker never touches it even while `titleElement`
+      // is stale (reused node) or not yet found during SPA navigation.
+      if (el.tagName === "H1" && el.classList && el.classList.contains("title")) {
+        return true;
+      }
+      el = el.parentNode;
+    }
+    return false;
+  }
+
   function walkAndReplace(node) {
     if (!node || !enabled) return;
 
     if (node.nodeType === Node.ELEMENT_NODE) {
-      if (node === titleElement) return;
+      if (isInsideTitle(node)) return;
       if (SKIP_TAGS.has(node.tagName)) return;
       if (node.classList && SKIP_CLASSES.test(node.className)) return;
       if (node.isContentEditable) return;
@@ -393,7 +532,7 @@
   function replaceWordsInTextNode(textNode) {
     if (processedNodes.has(textNode)) return;
     if (!textNode.textContent.trim()) return;
-    if (textNode.parentNode === titleElement) return;
+    if (isInsideTitle(textNode)) return;
 
     const text = textNode.textContent;
     const words = text.split(/(\s+)/);
@@ -602,6 +741,7 @@
     }
 
     lastRenderedTitle = null;
+    lastOriginalTitle = null;
     wrappedContainers = new WeakMap();
   }
 
