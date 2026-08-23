@@ -1,27 +1,28 @@
 # LinguaSwap - Language Learning Chrome Extension
 
-## Progress (as of Mar 2026)
+## Progress (as of Aug 2026)
+
+Phase-by-phase status lives in [ROADMAP.md](ROADMAP.md); design rationale lives
+in [DESIGN.md](DESIGN.md). Summary:
 
 ### Completed ✅
-- [x] Phoenix 1.8.5 project with LiveView
-- [x] PostgreSQL database setup (Docker)
+- [x] Phoenix 1.8.5 project with LiveView, PostgreSQL, Docker
 - [x] User authentication (email/password via phx.gen.auth)
-- [x] User model with target_language and settings fields
-- [x] Word model (vocabulary/translation pairs)
-- [x] UserWord model (tracks reveal_count, replacement_count, status)
-- [x] PageVisit model (tracks pages visited, time spent)
-- [x] REST API endpoints for Chrome extension (`/api/v1/*`)
+- [x] Word / UserWord / PageVisit models
+- [x] REST API endpoints for the Chrome extension (`/api/v1/*`)
 - [x] LiveView dashboard at `/dashboard`
-- [x] Docker setup (Dockerfile + docker-compose.yml)
-- [x] Live reload configured (inotify-tools)
+- [x] Chrome extension: word replacement, hover-to-reveal, rating popup, popup UI
+- [x] Word seed data for en-es and en-uz, now in `priv/data/*.tsv`
+- [x] **Roadmap Phase 0** — word metadata (`lemma`, `pos`, `token_count`,
+      `forms`), real frequency ordering, TSV importer
+- [x] **Roadmap Phase 1** — adaptive word intake: per-user active pool with a
+      budget, frequency-ordered introduction, graduation refill
 
-### In Progress 🚧
-- Chrome extension (not started)
-
-### Next Steps 📋
-- Create Chrome extension (manifest, content script, background script)
-- Add initial word seed data (en-es, en-uz)
-- Test API with extension
+### Next 📋
+- [ ] **Roadmap Phase 2** — English lemmatization in the client, proper-noun guard
+- [ ] **Roadmap Phase 3** — phrase entries, n-gram tokenizer, density cap
+- [ ] **Roadmap Phase 4** — LLM pipeline for precomputed target inflections
+- [ ] **Roadmap Phase 5** — sentence-level swap
 
 ---
 
@@ -63,6 +64,10 @@
 - Original language auto-detection from page content
 
 ### 2. Word Replacement Engine
+
+> The "Phase 1 / Phase 2" labels below are the original MVP framing and do **not**
+> line up with the numbered phases in [ROADMAP.md](ROADMAP.md). Sentence-level
+> translation is roadmap Phase 5.
 
 **Phase 1 (MVP): Word-by-word replacement**
 - Replace individual words based on user's learned vocabulary
@@ -153,9 +158,14 @@
 - id
 - original_word
 - target_translation
-- language_pair (e.g., "en-es")
-- frequency_rank
-- difficulty_score
+- language_pair (e.g., "en-es"; validated against Word.language_pairs/0)
+- frequency_rank        (nil when unknown — sorts last in frontier ordering)
+- difficulty_score      (derived from the frequency band on import)
+- lemma                 (canonical English base form; lookup key from Phase 2)
+- pos                   (part of speech, optional)
+- token_count           (1 = word, >1 = phrase entry; Phase 3)
+- forms                 (jsonb: target-side inflections; filled in Phase 4)
+- source                (seed / import / llm)
 - inserted_at
 ```
 
@@ -166,8 +176,10 @@
 - word_id
 - reveal_count (default: 0)
 - replacement_count (default: 0)
+- exposure_count (default: 0)
 - last_revealed_at
-- status (new/learning/known)
+- activated_at          (when the word entered the active pool)
+- status (hard/simple/trivial — only hard+simple occupy budget)
 ```
 
 ### PageVisit
@@ -191,7 +203,7 @@
 - [x] Basic word replacement (word-by-word) - API ready, extension pending
 - [x] Hover-to-reveal translation - API ready, extension pending
 - [x] Simple stats (words learned, pages visited) - API + dashboard ready
-- [ ] Chrome extension with on/off toggle
+- [x] Chrome extension with on/off toggle
 - [x] LiveView dashboard with basic stats
 
 ### Features (Post-MVP)

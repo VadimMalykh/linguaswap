@@ -26,6 +26,12 @@ defmodule LinguaswapWeb.ApiController do
 
   def get_words(conn, %{"language_pair" => language_pair}) do
     user = conn.assigns.current_scope.user
+    budget = Vocabulary.word_budget(user.settings)
+
+    # Fetching words is the natural moment to top the pool back up: it happens on
+    # every page load and reflects any words that graduated since the last one.
+    Vocabulary.ensure_active_pool(user.id, language_pair, budget)
+
     words_data = Vocabulary.get_words_for_replacement(user.id, language_pair)
 
     result =
@@ -41,7 +47,7 @@ defmodule LinguaswapWeb.ApiController do
         }
       end)
 
-    json(conn, %{words: result})
+    json(conn, %{words: result, pool: Vocabulary.pool_stats(user.id, language_pair, budget)})
   end
 
   def record_reveal(conn, %{"word" => original_word, "language_pair" => language_pair}) do

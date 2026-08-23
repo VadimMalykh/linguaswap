@@ -33,6 +33,29 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert %{"words" => []} = json_response(conn, 200)
     end
 
+    test "activates frontier words up to the budget and reports pool state", %{
+      conn: conn,
+      user: user
+    } do
+      for rank <- 1..5 do
+        {:ok, _} =
+          Vocabulary.create_word(%{
+            original_word: "word#{rank}",
+            target_translation: "palabra#{rank}",
+            language_pair: "en-es",
+            frequency_rank: rank
+          })
+      end
+
+      {:ok, _} = Linguaswap.Accounts.update_user_settings(user, %{"word_budget" => 3})
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => words, "pool" => pool} = json_response(conn, 200)
+
+      assert Enum.map(words, & &1["original"]) == ["word1", "word2", "word3"]
+      assert pool == %{"budget" => 3, "active" => 3, "graduated" => 0, "remaining" => 2}
+    end
+
     test "includes trivial words", %{conn: conn, user: user} do
       {:ok, word} =
         Vocabulary.create_word(%{

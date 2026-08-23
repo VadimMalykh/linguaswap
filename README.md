@@ -15,8 +15,11 @@ docker compose up -d
 # Run migrations (first time)
 docker compose exec app mix ecto.migrate
 
-# Seed vocabulary data (first time)
+# Seed vocabulary data from priv/data/*.tsv (first time; safe to re-run)
 docker compose exec app mix run priv/repo/seeds.exs
+
+# Import a larger word list for one language pair
+docker compose exec app mix linguaswap.import_words priv/data/en-es.tsv
 
 # Open the app
 open http://localhost:4000
@@ -49,5 +52,7 @@ docker compose exec app mix test test/linguaswap_web/controllers/page_controller
 ## Learn more
 
 - [SPEC.md](SPEC.md) — Full product specification
+- [DESIGN.md](DESIGN.md) — Design discussion and decisions
+- [ROADMAP.md](ROADMAP.md) — Phased development plan
 - [Phoenix Guides](https://hexdocs.pm/phoenix/overview.html)
 - [Phoenix Framework](https://www.phoenixframework.org/)

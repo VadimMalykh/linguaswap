@@ -35,6 +35,28 @@ defmodule LinguaswapWeb.DashboardLiveTest do
       {:ok, _view, _html} = live(conn, ~p"/dashboard")
     end
 
+    test "shows the learning pool for the user's language pair", %{conn: conn, user: user} do
+      for rank <- 1..4 do
+        {:ok, _} =
+          Vocabulary.create_word(%{
+            original_word: "word#{rank}",
+            target_translation: "palabra#{rank}",
+            language_pair: "en-es",
+            frequency_rank: rank
+          })
+      end
+
+      {:ok, _} = Linguaswap.Accounts.update_user_settings(user, %{"word_budget" => 3})
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+
+      {:ok, _view, html} = live(conn, ~p"/dashboard")
+
+      assert html =~ "Learning Pool"
+      assert html =~ "en-es"
+      assert html =~ "of 3 active words"
+      assert html =~ "1 waiting to be introduced"
+    end
+
     test "shows settings link", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/dashboard")
 

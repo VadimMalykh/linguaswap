@@ -422,8 +422,24 @@ defmodule Linguaswap.VocabularyTest do
           language_pair: "en-uz"
         })
 
-      results = Vocabulary.get_words_for_replacement(user.id, "en-es")
-      assert length(results) == 1
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+      Vocabulary.ensure_active_pool(user.id, "en-uz")
+
+      assert [%{word: word}] = Vocabulary.get_words_for_replacement(user.id, "en-es")
+      assert word.target_translation == "hola"
+    end
+
+    test "withholds dictionary words the user has not been given yet" do
+      user = AccountsFixtures.user_fixture()
+
+      {:ok, _} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      assert Vocabulary.get_words_for_replacement(user.id, "en-es") == []
     end
   end
 
@@ -491,6 +507,339 @@ defmodule Linguaswap.VocabularyTest do
       assert length(Vocabulary.list_words_for_user(user.id, "en-es")) == 1
       assert length(Vocabulary.list_words_for_user(user.id, "en-uz")) == 1
       assert length(Vocabulary.list_words_for_user(user.id)) == 2
+    end
+  end
+
+  describe "word metadata" do
+    test "derives lemma and token_count from the entry" do
+      assert {:ok, word} =
+               Vocabulary.create_word(%{
+                 original_word: "Running",
+                 target_translation: "corriendo",
+                 language_pair: "en-es"
+               })
+
+      assert word.lemma == "running"
+      assert word.token_count == 1
+      assert word.forms == %{}
+    end
+
+    test "counts tokens in a phrase entry" do
+      assert {:ok, word} =
+               Vocabulary.create_word(%{
+                 original_word: "in front of",
+                 target_translation: "delante de",
+                 language_pair: "en-es"
+               })
+
+      assert word.token_count == 3
+    end
+
+    test "keeps an explicitly supplied lemma" do
+      assert {:ok, word} =
+               Vocabulary.create_word(%{
+                 original_word: "ran",
+                 target_translation: "corrió",
+                 language_pair: "en-es",
+                 lemma: "run"
+               })
+
+      assert word.lemma == "run"
+    end
+
+    test "rejects an unsupported language pair" do
+      assert {:error, changeset} =
+               Vocabulary.create_word(%{
+                 original_word: "hello",
+                 target_translation: "bonjour",
+                 language_pair: "en-fr"
+               })
+
+      assert errors_on(changeset).language_pair
+    end
+  end
+
+  describe "get_or_create_word!/4" do
+    test "leaves frequency data unset when the caller does not know it" do
+      word = Vocabulary.get_or_create_word!("hello", "hola", "en-es")
+
+      assert word.frequency_rank == nil
+      assert word.difficulty_score == nil
+    end
+
+    test "accepts extra attributes for a newly created word" do
+      word =
+        Vocabulary.get_or_create_word!("hello", "hola", "en-es", %{
+          frequency_rank: 12,
+          difficulty_score: 1,
+          source: "import"
+        })
+
+      assert word.frequency_rank == 12
+      assert word.source == "import"
+    end
+  end
+
+  describe "upsert_word/1" do
+    test "inserts a new entry" do
+      assert {:ok, word} =
+               Vocabulary.upsert_word(%{
+                 original_word: "hello",
+                 target_translation: "hola",
+                 language_pair: "en-es",
+                 frequency_rank: 40
+               })
+
+      assert word.frequency_rank == 40
+    end
+
+    test "updates an existing entry instead of failing on the unique index" do
+      {:ok, first} =
+        Vocabulary.upsert_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es",
+          frequency_rank: 40
+        })
+
+      assert {:ok, second} =
+               Vocabulary.upsert_word(%{
+                 original_word: "hello",
+                 target_translation: "buenas",
+                 language_pair: "en-es",
+                 frequency_rank: 12
+               })
+
+      assert second.id == first.id
+      assert second.target_translation == "buenas"
+      assert second.frequency_rank == 12
+    end
+
+    test "returns the changeset for invalid attributes" do
+      assert {:error, changeset} =
+               Vocabulary.upsert_word(%{original_word: "hello", language_pair: "en-es"})
+
+      assert errors_on(changeset).target_translation
+    end
+  end
+
+  defp with_budget(user, budget) do
+    {:ok, user} = Linguaswap.Accounts.update_user_settings(user, %{"word_budget" => budget})
+    user
+  end
+
+  describe "active pool" do
+    setup do
+      user = AccountsFixtures.user_fixture()
+
+      words =
+        for rank <- 1..10 do
+          {:ok, word} =
+            Vocabulary.create_word(%{
+              original_word: "word#{rank}",
+              target_translation: "palabra#{rank}",
+              language_pair: "en-es",
+              frequency_rank: rank
+            })
+
+          word
+        end
+
+      %{user: user, words: words}
+    end
+
+    test "fills the pool up to the budget", %{user: user} do
+      assert %{activated: 3, active: 3, budget: 3} =
+               Vocabulary.ensure_active_pool(user.id, "en-es", 3)
+
+      assert length(Vocabulary.active_pool(user.id, "en-es")) == 3
+    end
+
+    test "introduces words in frequency order", %{user: user} do
+      Vocabulary.ensure_active_pool(user.id, "en-es", 3)
+
+      assert ["word1", "word2", "word3"] =
+               Vocabulary.active_pool(user.id, "en-es") |> Enum.map(& &1.word.original_word)
+    end
+
+    test "sorts words with no known frequency last", %{user: user} do
+      {:ok, _unranked} =
+        Vocabulary.create_word(%{
+          original_word: "zzz",
+          target_translation: "zeta",
+          language_pair: "en-es"
+        })
+
+      Vocabulary.ensure_active_pool(user.id, "en-es", 10)
+
+      refute "zzz" in (Vocabulary.active_pool(user.id, "en-es")
+                       |> Enum.map(& &1.word.original_word))
+    end
+
+    test "is idempotent while the pool is full", %{user: user} do
+      Vocabulary.ensure_active_pool(user.id, "en-es", 3)
+
+      assert %{activated: 0, active: 3} = Vocabulary.ensure_active_pool(user.id, "en-es", 3)
+    end
+
+    test "does not remove words when the budget shrinks", %{user: user} do
+      Vocabulary.ensure_active_pool(user.id, "en-es", 5)
+
+      assert %{activated: 0, active: 5} = Vocabulary.ensure_active_pool(user.id, "en-es", 2)
+    end
+
+    test "stops when the dictionary runs out", %{user: user} do
+      assert %{activated: 10, active: 10} = Vocabulary.ensure_active_pool(user.id, "en-es", 50)
+    end
+
+    test "stamps activated words with an activation time", %{user: user} do
+      Vocabulary.ensure_active_pool(user.id, "en-es", 1)
+
+      assert [%{user_word: user_word}] = Vocabulary.active_pool(user.id, "en-es")
+      assert user_word.activated_at
+      assert user_word.status == "hard"
+    end
+
+    test "ignores words from other language pairs", %{user: user} do
+      {:ok, _} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "salom",
+          language_pair: "en-uz"
+        })
+
+      Vocabulary.ensure_active_pool(user.id, "en-es", 50)
+
+      assert Vocabulary.active_pool(user.id, "en-uz") == []
+    end
+  end
+
+  describe "graduation refills the pool" do
+    setup do
+      user = AccountsFixtures.user_fixture() |> with_budget(2)
+
+      words =
+        for rank <- 1..5 do
+          {:ok, word} =
+            Vocabulary.create_word(%{
+              original_word: "word#{rank}",
+              target_translation: "palabra#{rank}",
+              language_pair: "en-es",
+              frequency_rank: rank
+            })
+
+          word
+        end
+
+      %{user: user, words: words}
+    end
+
+    test "rating a word trivial frees budget and introduces the next word", %{
+      user: user,
+      words: [first | _]
+    } do
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+
+      assert ["word1", "word2"] =
+               Vocabulary.active_pool(user.id, "en-es") |> Enum.map(& &1.word.original_word)
+
+      {:ok, _} = Vocabulary.rate_word(user.id, first.id, "trivial")
+
+      assert ["word2", "word3"] =
+               Vocabulary.active_pool(user.id, "en-es") |> Enum.map(& &1.word.original_word)
+    end
+
+    test "rating a word hard or simple does not introduce new words", %{
+      user: user,
+      words: [first | _]
+    } do
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+      {:ok, _} = Vocabulary.rate_word(user.id, first.id, "simple")
+
+      assert length(Vocabulary.active_pool(user.id, "en-es")) == 2
+    end
+
+    test "graduated words are still served to the extension", %{user: user, words: [first | _]} do
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+      {:ok, _} = Vocabulary.rate_word(user.id, first.id, "trivial")
+
+      served =
+        Vocabulary.get_words_for_replacement(user.id, "en-es")
+        |> Enum.map(& &1.word.original_word)
+
+      assert "word1" in served
+      assert length(served) == 3
+    end
+
+    test "auto-promotion on page visits refills the pool", %{user: user, words: words} do
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+
+      # Drive the first word to the auto-promotion thresholds without reveals.
+      [first | _] = words
+      user_word = Vocabulary.get_user_word(user.id, first.id)
+
+      {:ok, _} =
+        user_word
+        |> Linguaswap.Vocabulary.UserWord.changeset(%{status: "simple", exposure_count: 100})
+        |> Linguaswap.Repo.update()
+
+      Vocabulary.increment_exposure(user.id, "en-es")
+
+      assert Vocabulary.get_user_word(user.id, first.id).status == "trivial"
+
+      active = Vocabulary.active_pool(user.id, "en-es") |> Enum.map(& &1.word.original_word)
+      assert length(active) == 2
+      refute "word1" in active
+    end
+  end
+
+  describe "word_budget/1" do
+    test "defaults when unset or unusable" do
+      assert Vocabulary.word_budget(%{}) == Vocabulary.default_word_budget()
+      assert Vocabulary.word_budget(nil) == Vocabulary.default_word_budget()
+      assert Vocabulary.word_budget(%{"word_budget" => 0}) == Vocabulary.default_word_budget()
+
+      assert Vocabulary.word_budget(%{"word_budget" => "many"}) ==
+               Vocabulary.default_word_budget()
+    end
+
+    test "reads an integer or numeric string from settings" do
+      assert Vocabulary.word_budget(%{"word_budget" => 25}) == 25
+      assert Vocabulary.word_budget(%{"word_budget" => "25"}) == 25
+    end
+  end
+
+  describe "pool_stats/3" do
+    test "reports active, graduated and remaining counts" do
+      user = AccountsFixtures.user_fixture() |> with_budget(2)
+
+      for rank <- 1..5 do
+        {:ok, _} =
+          Vocabulary.create_word(%{
+            original_word: "word#{rank}",
+            target_translation: "palabra#{rank}",
+            language_pair: "en-es",
+            frequency_rank: rank
+          })
+      end
+
+      Vocabulary.ensure_active_pool(user.id, "en-es")
+      [%{word: word} | _] = Vocabulary.active_pool(user.id, "en-es")
+      {:ok, _} = Vocabulary.rate_word(user.id, word.id, "trivial")
+
+      stats = Vocabulary.pool_stats(user.id, "en-es")
+      assert stats == %{budget: 2, active: 2, graduated: 1, remaining: 2}
+    end
+  end
+
+  describe "language_pair_for_target/1" do
+    test "builds a supported pair" do
+      assert Vocabulary.language_pair_for_target("es") == "en-es"
+      assert Vocabulary.language_pair_for_target("uz") == "en-uz"
+    end
+
+    test "falls back for an unsupported target language" do
+      assert Vocabulary.language_pair_for_target("fr") in Vocabulary.language_pairs()
     end
   end
 end

@@ -5,9 +5,17 @@ defmodule Linguaswap.Vocabulary do
 
   import Ecto.Query, warn: false
   alias Linguaswap.Repo
+  alias Linguaswap.Accounts.User
   alias Linguaswap.Vocabulary.{Word, UserWord, PageVisit}
 
   @valid_statuses ~w(hard simple trivial)
+
+  # Statuses that occupy a slot in the user's active learning pool. `trivial`
+  # words are still replaced on the page, but they are mastered and no longer
+  # cost budget — that is what frees room for new words.
+  @active_statuses ~w(hard simple)
+
+  @default_word_budget 50
 
   def list_words_for_user(user_id, language_pair \\ nil) do
     query =
@@ -33,22 +41,67 @@ defmodule Linguaswap.Vocabulary do
     |> Repo.insert()
   end
 
-  def get_or_create_word!(original_word, target_translation, language_pair) do
+  @doc """
+  Language pairs the dictionary supports.
+  """
+  defdelegate language_pairs(), to: Word
+
+  def get_or_create_word!(original_word, target_translation, language_pair, attrs \\ %{}) do
     case Repo.get_by(Word, original_word: original_word, language_pair: language_pair) do
       nil ->
+        # frequency_rank/difficulty_score are deliberately left unset when the
+        # caller doesn't know them: they drive frontier ordering, and a real
+        # `nil` sorts last rather than pretending the word is the most common
+        # one in the language.
         {:ok, word} =
-          create_word(%{
-            original_word: original_word,
-            target_translation: target_translation,
-            language_pair: language_pair,
-            frequency_rank: 0,
-            difficulty_score: 0
+          attrs
+          |> Map.new(fn {k, v} -> {to_string(k), v} end)
+          |> Map.merge(%{
+            "original_word" => original_word,
+            "target_translation" => target_translation,
+            "language_pair" => language_pair
           })
+          |> create_word()
 
         word
 
       word ->
         word
+    end
+  end
+
+  @doc """
+  Inserts a dictionary entry, updating it in place when the
+  `original_word`/`language_pair` pair already exists.
+
+  Used by the word importer so re-running an import refreshes translations and
+  frequency data instead of failing on the unique index.
+  """
+  def upsert_word(attrs) do
+    changeset = Word.changeset(%Word{}, attrs)
+
+    with %Ecto.Changeset{valid?: true} <- changeset do
+      replaceable =
+        changeset.changes
+        |> Map.take([
+          :target_translation,
+          :frequency_rank,
+          :difficulty_score,
+          :lemma,
+          :pos,
+          :token_count,
+          :forms,
+          :source
+        ])
+        |> Map.keys()
+
+      Repo.insert(changeset,
+        on_conflict: {:replace, [:updated_at | replaceable]},
+        conflict_target: [:original_word, :language_pair],
+        returning: true
+      )
+    else
+      changeset -> {:error, changeset}
     end
   end
 
@@ -59,9 +112,11 @@ defmodule Linguaswap.Vocabulary do
   def get_or_create_user_word!(user_id, word_id) do
     case Repo.get_by(UserWord, user_id: user_id, word_id: word_id) do
       nil ->
+        # A word the user has interacted with is in play whether or not the
+        # budget put it there, so it gets an activation stamp like any other.
         {:ok, user_word} =
           %UserWord{user_id: user_id, word_id: word_id}
-          |> UserWord.changeset(%{})
+          |> UserWord.changeset(%{activated_at: DateTime.utc_now(:second)})
           |> Repo.insert()
 
         user_word
@@ -110,9 +165,17 @@ defmodule Linguaswap.Vocabulary do
   def rate_word(user_id, word_id, status) when status in @valid_statuses do
     user_word = get_or_create_user_word!(user_id, word_id)
 
-    user_word
-    |> UserWord.changeset(%{status: status})
-    |> Repo.update()
+    result =
+      user_word
+      |> UserWord.changeset(%{status: status})
+      |> Repo.update()
+
+    # Rating a word "trivial" graduates it just as auto-promotion does, so the
+    # freed budget should be refilled straight away.
+    with {:ok, updated} <- result do
+      if status == "trivial", do: refill_pool_for_word(user_id, word_id)
+      {:ok, updated}
+    end
   end
 
   def rate_word(_user_id, _word_id, _status), do: {:error, :invalid_status}
@@ -135,6 +198,23 @@ defmodule Linguaswap.Vocabulary do
     end
 
     check_auto_promotions(user_id, user_word_ids)
+
+    # Auto-promotion to `trivial` is the main way budget frees up, so the pool
+    # is refilled on the same pass rather than waiting for the next page load.
+    ensure_active_pool(user_id, language_pair)
+  end
+
+  defp refill_pool_for_word(user_id, word_id) do
+    case Repo.get(Word, word_id) do
+      nil -> :ok
+      word -> ensure_active_pool(user_id, word.language_pair)
+    end
+  end
+
+  defp budget_for_user(user_id) do
+    from(u in User, where: u.id == ^user_id, select: u.settings)
+    |> Repo.one()
+    |> word_budget()
   end
 
   defp check_auto_promotions(_user_id, user_word_ids) do
@@ -195,13 +275,198 @@ defmodule Linguaswap.Vocabulary do
     }
   end
 
+  @doc """
+  Words to send to the extension for a language pair.
+
+  This is the user's own vocabulary — the active pool plus everything they have
+  graduated — not the whole dictionary. Words the user has not reached yet are
+  withheld until the budget has room for them (see `ensure_active_pool/3`).
+  """
   def get_words_for_replacement(user_id, language_pair) do
-    from(w in Word,
-      left_join: uw in UserWord,
-      on: w.id == uw.word_id and uw.user_id == ^user_id,
+    from(uw in UserWord,
+      join: w in Word,
+      on: w.id == uw.word_id,
+      where: uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
+      order_by: [asc_nulls_last: w.frequency_rank, asc: w.id],
       select: %{word: w, user_word: uw}
     )
     |> Repo.all()
+  end
+
+  ## Active pool (adaptive word intake)
+
+  @doc """
+  Number of active words a user carries by default.
+  """
+  def default_word_budget, do: @default_word_budget
+
+  @doc """
+  Resolves the user's word budget from their settings map.
+
+  Takes the raw settings rather than a `User` struct so the Vocabulary context
+  stays independent of Accounts.
+  """
+  def word_budget(settings) when is_map(settings) do
+    case Map.get(settings, "word_budget") do
+      budget when is_integer(budget) and budget > 0 ->
+        budget
+
+      budget when is_binary(budget) ->
+        case Integer.parse(budget) do
+          {parsed, ""} when parsed > 0 -> parsed
+          _ -> @default_word_budget
+        end
+
+      _ ->
+        @default_word_budget
+    end
+  end
+
+  def word_budget(_settings), do: @default_word_budget
+
+  @doc """
+  The language pair served for a user's target language.
+  """
+  def language_pair_for_target(target_language) do
+    pair = "en-#{target_language}"
+    if pair in Word.language_pairs(), do: pair, else: hd(Word.language_pairs())
+  end
+
+  @doc """
+  Words the user is currently learning: `hard` or `simple`, in frontier order.
+  """
+  def active_pool(user_id, language_pair) do
+    from(uw in UserWord,
+      join: w in Word,
+      on: w.id == uw.word_id,
+      where: uw.user_id == ^user_id,
+      where: w.language_pair == ^language_pair,
+      where: uw.status in ^@active_statuses,
+      order_by: [asc_nulls_last: w.frequency_rank, asc: w.id],
+      select: %{word: w, user_word: uw}
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Tops the active pool back up to `budget` words.
+
+  This is the heart of the budget model: the user carries a fixed number of
+  words in flight, and words only enter as others graduate to `trivial`.
+  Candidates are taken in frequency order, so the most useful unseen word is
+  always the next one introduced. Entries with no known frequency sort last
+  rather than first.
+
+  The budget defaults to the user's own setting, so background top-ups triggered
+  by graduation use the same number as an explicit call from the API.
+
+  Returns a summary of the pool after the top-up.
+  """
+  def ensure_active_pool(user_id, language_pair, budget \\ nil) do
+    budget = max(budget || budget_for_user(user_id), 0)
+    active = active_pool_size(user_id, language_pair)
+    activated = activate_frontier_words(user_id, language_pair, budget - active)
+
+    %{budget: budget, active: active + activated, activated: activated}
+  end
+
+  @doc """
+  Dictionary entries the user has not been given yet, in the order they will be
+  introduced.
+  """
+  def frontier_words(user_id, language_pair, limit) do
+    from(w in Word,
+      left_join: uw in UserWord,
+      on: uw.word_id == w.id and uw.user_id == ^user_id,
+      where: w.language_pair == ^language_pair,
+      where: is_nil(uw.id),
+      order_by: [asc_nulls_last: w.frequency_rank, asc: w.id],
+      limit: ^limit,
+      select: w
+    )
+    |> Repo.all()
+  end
+
+  @doc """
+  Pool state for a user and language pair, for the dashboard and the API.
+  """
+  def pool_stats(user_id, language_pair, budget \\ nil) do
+    budget = budget || budget_for_user(user_id)
+
+    counts =
+      from(uw in UserWord,
+        join: w in Word,
+        on: w.id == uw.word_id,
+        where: uw.user_id == ^user_id,
+        where: w.language_pair == ^language_pair,
+        group_by: uw.status,
+        select: {uw.status, count(uw.id)}
+      )
+      |> Repo.all()
+      |> Map.new()
+
+    active = Enum.reduce(@active_statuses, 0, &(&2 + Map.get(counts, &1, 0)))
+
+    %{
+      budget: budget,
+      active: active,
+      graduated: Map.get(counts, "trivial", 0),
+      remaining: count_frontier_words(user_id, language_pair)
+    }
+  end
+
+  defp active_pool_size(user_id, language_pair) do
+    from(uw in UserWord,
+      join: w in Word,
+      on: w.id == uw.word_id,
+      where: uw.user_id == ^user_id,
+      where: w.language_pair == ^language_pair,
+      where: uw.status in ^@active_statuses,
+      select: count(uw.id)
+    )
+    |> Repo.one()
+  end
+
+  defp count_frontier_words(user_id, language_pair) do
+    from(w in Word,
+      left_join: uw in UserWord,
+      on: uw.word_id == w.id and uw.user_id == ^user_id,
+      where: w.language_pair == ^language_pair,
+      where: is_nil(uw.id),
+      select: count(w.id)
+    )
+    |> Repo.one()
+  end
+
+  defp activate_frontier_words(_user_id, _language_pair, deficit) when deficit <= 0, do: 0
+
+  defp activate_frontier_words(user_id, language_pair, deficit) do
+    now = DateTime.utc_now(:second)
+
+    entries =
+      user_id
+      |> frontier_words(language_pair, deficit)
+      |> Enum.map(fn word ->
+        %{
+          user_id: user_id,
+          word_id: word.id,
+          status: "hard",
+          reveal_count: 0,
+          replacement_count: 0,
+          exposure_count: 0,
+          activated_at: now,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    {activated, _} =
+      Repo.insert_all(UserWord, entries,
+        on_conflict: :nothing,
+        conflict_target: [:user_id, :word_id]
+      )
+
+    activated
   end
 end

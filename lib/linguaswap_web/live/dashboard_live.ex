@@ -6,8 +6,18 @@ defmodule LinguaswapWeb.DashboardLive do
     user = socket.assigns.current_scope.user
     stats = Vocabulary.get_user_stats(user.id)
 
-    {:ok, assign(socket, stats: stats)}
+    language_pair = Vocabulary.language_pair_for_target(user.target_language)
+    budget = Vocabulary.word_budget(user.settings)
+    pool = Vocabulary.pool_stats(user.id, language_pair, budget)
+
+    {:ok, assign(socket, stats: stats, pool: pool, language_pair: language_pair)}
   end
+
+  defp pool_percentage(%{active: active, budget: budget}) when budget > 0 do
+    min(round(active / budget * 100), 100)
+  end
+
+  defp pool_percentage(_pool), do: 0
 
   def render(assigns) do
     ~H"""
@@ -35,6 +45,35 @@ defmodule LinguaswapWeb.DashboardLive do
             <div class="text-4xl font-bold text-emerald-500">{@stats.trivial_words}</div>
             <div class="text-gray-600 mt-2">Easy</div>
           </div>
+        </div>
+
+        <div class="bg-white p-6 rounded-lg shadow-md mb-8">
+          <div class="flex items-baseline justify-between mb-4">
+            <h2 class="text-xl font-semibold">Learning Pool</h2>
+            <span class="text-sm text-gray-500">{@language_pair}</span>
+          </div>
+
+          <div class="flex items-baseline gap-2 mb-3">
+            <span class="text-3xl font-bold text-emerald-600">{@pool.active}</span>
+            <span class="text-gray-500">of {@pool.budget} active words</span>
+          </div>
+
+          <div class="h-2 w-full bg-gray-100 rounded-full overflow-hidden mb-4">
+            <div
+              class="h-full bg-emerald-500 rounded-full transition-all duration-500"
+              style={"width: #{pool_percentage(@pool)}%"}
+            >
+            </div>
+          </div>
+
+          <div class="flex justify-between text-sm text-gray-600">
+            <span>{@pool.graduated} graduated</span>
+            <span>{@pool.remaining} waiting to be introduced</span>
+          </div>
+
+          <p class="text-sm text-gray-500 mt-4">
+            New words are introduced in frequency order as you master the ones you have.
+          </p>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">

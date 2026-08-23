@@ -10,6 +10,9 @@ defmodule Linguaswap.Vocabulary.UserWord do
     field :last_revealed_at, :utc_datetime
     field :status, :string, default: "hard"
 
+    # When the word entered the user's active learning pool.
+    field :activated_at, :utc_datetime
+
     belongs_to :user, Linguaswap.Accounts.User
     belongs_to :word, Linguaswap.Vocabulary.Word
 
@@ -23,7 +26,8 @@ defmodule Linguaswap.Vocabulary.UserWord do
       :replacement_count,
       :exposure_count,
       :last_revealed_at,
-      :status
+      :status,
+      :activated_at
     ])
     |> validate_required([:user_id, :word_id])
   end
