@@ -22,10 +22,31 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
       assert %{
                "original" => "hello",
+               "lemma" => "hello",
                "translation" => "hola",
                "status" => "hard",
                "reveal_count" => 1
              } = hd(words)
+    end
+
+    test "serves the lemma so the client can match inflected page text", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "running",
+          target_translation: "corriendo",
+          language_pair: "en-es",
+          lemma: "run"
+        })
+
+      Vocabulary.record_word_reveal(user.id, word.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => [served]} = json_response(conn, 200)
+      assert served["original"] == "running"
+      assert served["lemma"] == "run"
     end
 
     test "returns empty list when no words exist", %{conn: conn} do
@@ -89,6 +110,21 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
       user_word = Vocabulary.get_user_word(user.id, word.id)
       assert user_word.reveal_count == 1
+    end
+
+    test "resolves a word by lemma", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "running",
+          target_translation: "corriendo",
+          language_pair: "en-es",
+          lemma: "run"
+        })
+
+      conn = post(conn, ~p"/api/v1/words/reveal", %{"word" => "run", "language_pair" => "en-es"})
+
+      assert json_response(conn, 200)["success"] == true
+      assert Vocabulary.get_user_word(user.id, word.id).reveal_count == 1
     end
 
     test "returns 404 for non-existent word", %{conn: conn} do

@@ -1,0 +1,215 @@
+const test = require("node:test");
+const assert = require("node:assert");
+
+const lemmatizer = require("../lemmatizer.js");
+const { candidates, splitToken, applyCase, isProperNoun, startsSentence } = lemmatizer;
+
+// Mirrors how the content script uses the candidate list: first hit wins.
+function lookup(dictionary, surface) {
+  for (const candidate of candidates(surface)) {
+    if (dictionary.has(candidate)) return candidate;
+  }
+  return null;
+}
+
+test("the surface form is always tried first", () => {
+  assert.strictEqual(candidates("run")[0], "run");
+  assert.strictEqual(candidates("Running")[0], "running");
+});
+
+test("regular verb inflections reach the base form", () => {
+  const dict = new Set(["run", "walk", "stop", "make", "come", "use", "study", "carry", "watch"]);
+
+  assert.strictEqual(lookup(dict, "running"), "run");
+  assert.strictEqual(lookup(dict, "runs"), "run");
+  assert.strictEqual(lookup(dict, "walked"), "walk");
+  assert.strictEqual(lookup(dict, "walking"), "walk");
+  assert.strictEqual(lookup(dict, "stopped"), "stop");
+  assert.strictEqual(lookup(dict, "stopping"), "stop");
+  assert.strictEqual(lookup(dict, "making"), "make");
+  assert.strictEqual(lookup(dict, "makes"), "make");
+  assert.strictEqual(lookup(dict, "coming"), "come");
+  assert.strictEqual(lookup(dict, "used"), "use");
+  assert.strictEqual(lookup(dict, "studied"), "study");
+  assert.strictEqual(lookup(dict, "studies"), "study");
+  assert.strictEqual(lookup(dict, "carries"), "carry");
+  assert.strictEqual(lookup(dict, "watches"), "watch");
+});
+
+test("plurals reach the singular", () => {
+  const dict = new Set(["word", "box", "city", "day", "child", "man", "life"]);
+
+  assert.strictEqual(lookup(dict, "words"), "word");
+  assert.strictEqual(lookup(dict, "boxes"), "box");
+  assert.strictEqual(lookup(dict, "cities"), "city");
+  assert.strictEqual(lookup(dict, "days"), "day");
+  assert.strictEqual(lookup(dict, "children"), "child");
+  assert.strictEqual(lookup(dict, "men"), "man");
+  assert.strictEqual(lookup(dict, "lives"), "life");
+});
+
+test("irregular verbs reach the base form", () => {
+  const dict = new Set(["be", "have", "go", "take", "think", "eat", "good"]);
+
+  assert.strictEqual(lookup(dict, "was"), "be");
+  assert.strictEqual(lookup(dict, "been"), "be");
+  assert.strictEqual(lookup(dict, "has"), "have");
+  assert.strictEqual(lookup(dict, "went"), "go");
+  assert.strictEqual(lookup(dict, "taken"), "take");
+  assert.strictEqual(lookup(dict, "thought"), "think");
+  assert.strictEqual(lookup(dict, "ate"), "eat");
+  assert.strictEqual(lookup(dict, "better"), "good");
+});
+
+test("an irregular form never falls through to the suffix rules", () => {
+  // "does" must not be offered as "doe"; the irregular map is the last word.
+  assert.deepStrictEqual(candidates("does"), ["does", "do"]);
+  assert.deepStrictEqual(candidates("lives"), ["lives", "life"]);
+});
+
+test("short function words are not stripped into commoner words", () => {
+  const dict = new Set(["a", "i", "it", "the", "on", "hi", "do", "new"]);
+
+  // Each of these once produced a wrong, very common word.
+  assert.strictEqual(lookup(dict, "as"), null);
+  assert.strictEqual(lookup(dict, "is"), null);
+  assert.strictEqual(lookup(dict, "its"), null);
+  assert.strictEqual(lookup(dict, "his"), null);
+  assert.strictEqual(lookup(dict, "thing"), null);
+  assert.strictEqual(lookup(dict, "news"), null);
+  assert.strictEqual(lookup(dict, "this"), null);
+  assert.strictEqual(lookup(dict, "us"), null);
+});
+
+test("bare -er and -est are left alone", () => {
+  const dict = new Set(["corn", "flow", "numb", "happy"]);
+
+  assert.strictEqual(lookup(dict, "corner"), null);
+  assert.strictEqual(lookup(dict, "flower"), null);
+  assert.strictEqual(lookup(dict, "number"), null);
+  // The -y forms are safe enough to keep.
+  assert.strictEqual(lookup(dict, "happier"), "happy");
+  assert.strictEqual(lookup(dict, "happiest"), "happy");
+});
+
+test("splitToken keeps punctuation apart from the word", () => {
+  assert.deepStrictEqual(splitToken("world"), { prefix: "", core: "world", suffix: "" });
+  assert.deepStrictEqual(splitToken("world,"), { prefix: "", core: "world", suffix: "," });
+  assert.deepStrictEqual(splitToken('"world"'), { prefix: '"', core: "world", suffix: '"' });
+  assert.deepStrictEqual(splitToken("(world)."), { prefix: "(", core: "world", suffix: ")." });
+  assert.deepStrictEqual(splitToken("don't"), { prefix: "", core: "don't", suffix: "" });
+  assert.deepStrictEqual(splitToken("—"), { prefix: "—", core: "", suffix: "" });
+  assert.deepStrictEqual(splitToken("café."), { prefix: "", core: "café", suffix: "." });
+});
+
+test("applyCase carries the replaced word's capitalization over", () => {
+  assert.strictEqual(applyCase("world", "mundo"), "mundo");
+  assert.strictEqual(applyCase("World", "mundo"), "Mundo");
+  assert.strictEqual(applyCase("WORLD", "mundo"), "MUNDO");
+  // A single capital is a sentence start, not shouting.
+  assert.strictEqual(applyCase("A", "un"), "Un");
+});
+
+test("proper nouns are only swapped when capitalization is explained", () => {
+  // Mid-sentence capitals are names.
+  assert.strictEqual(isProperNoun("Paris", false), true);
+  assert.strictEqual(isProperNoun("USA", false), true);
+  assert.strictEqual(isProperNoun("USA", true), true);
+  // Long all-caps is shouting, not an initialism.
+  assert.strictEqual(isProperNoun("WATER", false), false);
+  // At a sentence start, capitalization says nothing.
+  assert.strictEqual(isProperNoun("The", true), false);
+  assert.strictEqual(isProperNoun("world", false), false);
+  // Except for names we know.
+  assert.strictEqual(isProperNoun("Apple", true), true);
+  assert.strictEqual(isProperNoun("Windows", true), true);
+  // "I" and "A" are words, not initials.
+  assert.strictEqual(isProperNoun("I", false), false);
+  assert.strictEqual(isProperNoun("A", false), false);
+});
+
+test("startsSentence reads the preceding token", () => {
+  assert.strictEqual(startsSentence(null), true);
+  assert.strictEqual(startsSentence(""), true);
+  assert.strictEqual(startsSentence("word"), false);
+  assert.strictEqual(startsSentence("end."), true);
+  assert.strictEqual(startsSentence("really?"), true);
+  assert.strictEqual(startsSentence('said."'), true);
+  assert.strictEqual(startsSentence("e.g."), true);
+});
+
+// A dictionary shaped like the one the API sends: entries keyed by spelling
+// and by lemma, sharing one object per entry.
+function dictionary(entries) {
+  const map = {};
+  for (const [word, translation] of Object.entries(entries)) {
+    map[word] = { original: word, translation, status: "hard" };
+  }
+  return (candidate) => map[candidate] || null;
+}
+
+function swap(text, entries) {
+  const { parts, matched } = lemmatizer.segmentText(text, dictionary(entries));
+  return { text: lemmatizer.renderParts(parts), matched, parts };
+}
+
+test("segmentText swaps inflected forms through their lemma", () => {
+  const { text } = swap("She was running and he stopped.", {
+    be: "ser",
+    run: "correr",
+    stop: "parar",
+  });
+
+  assert.strictEqual(text, "She ser correr and he parar.");
+});
+
+test("segmentText keeps punctuation outside the swap", () => {
+  const { text, parts } = swap('He said, "the word."', { word: "palabra", the: "el" });
+
+  assert.strictEqual(text, 'He said, "el palabra."');
+
+  const swapped = parts.filter((p) => p.type === "swap");
+  assert.deepStrictEqual(
+    swapped.map((p) => [p.prefix, p.core, p.suffix]),
+    [['"', "the", ""], ["", "word", '."']]
+  );
+});
+
+test("segmentText carries capitalization onto the translation", () => {
+  assert.strictEqual(swap("Water is cold.", { water: "agua" }).text, "Agua is cold.");
+  assert.strictEqual(swap("drink WATER now", { water: "agua" }).text, "drink AGUA now");
+});
+
+test("segmentText leaves names alone but not sentence-initial words", () => {
+  const dict = { apple: "manzana", the: "el", world: "mundo", may: "mayo" };
+
+  // Mid-sentence capital: a name.
+  assert.strictEqual(swap("I ate an Apple today", dict).text, "I ate an Apple today");
+  // Sentence-initial capital of a brand: still a name.
+  assert.strictEqual(swap("Apple shipped it.", dict).text, "Apple shipped it.");
+  // Sentence-initial ordinary word: swapped, with its capital kept.
+  assert.strictEqual(swap("The end.", dict).text, "El end.");
+  // A new sentence starts after terminal punctuation.
+  assert.strictEqual(swap("Yes. The end.", dict).text, "Yes. El end.");
+  // Acronyms are never vocabulary.
+  assert.strictEqual(swap("the USA today", dict).text, "el USA today");
+});
+
+test("segmentText reports whether anything was swapped", () => {
+  assert.strictEqual(swap("nothing here matches", { word: "palabra" }).matched, false);
+  assert.strictEqual(swap("one word here", { word: "palabra" }).matched, true);
+});
+
+test("segmentText round-trips text it does not change", () => {
+  const original = "  Spacing,   punctuation — and (parentheses) stay put.  ";
+  assert.strictEqual(swap(original, {}).text, original);
+});
+
+test("a swap part carries the entry the API knows, not the page form", () => {
+  const { parts } = swap("running fast", { run: "correr" });
+  const swapped = parts.find((p) => p.type === "swap");
+
+  assert.strictEqual(swapped.core, "running");
+  assert.strictEqual(swapped.entry.original, "run");
+  assert.strictEqual(swapped.display, "correr");
+});

@@ -20,6 +20,10 @@
 
   const SKIP_CLASSES = /linguaswap|CodeMirror|hljs/;
 
+  // Lemmatization, the proper-noun guard, and the punctuation/casing helpers
+  // live in lemmatizer.js, which the manifest loads before this file.
+  const tokens = globalThis.LinguaSwapLemmatizer;
+
   console.log("LinguaSwap content script loaded (title-fix v2)");
 
   function safeSendMessage(message, callback) {
@@ -218,12 +222,24 @@
         if (!response || !response.ok || !response.words) return;
 
         wordMap = {};
+
+        // Two passes so a spelling always beats a lemma: several entries can
+        // share a lemma, and the API sends them in frequency order.
+        const entries = [];
         for (const w of response.words) {
-          wordMap[w.original.toLowerCase()] = {
+          const entry = {
             translation: w.translation,
             status: w.status,
             original: w.original,
+            lemma: (w.lemma || w.original).toLowerCase(),
           };
+          entries.push(entry);
+
+          const surface = w.original.toLowerCase();
+          if (!wordMap[surface]) wordMap[surface] = entry;
+        }
+        for (const entry of entries) {
+          if (!wordMap[entry.lemma]) wordMap[entry.lemma] = entry;
         }
 
         translateTitle();
@@ -235,6 +251,12 @@
         reportPageVisit();
       }
     );
+  }
+
+  // Handed to the tokenizer, which walks candidate base forms for each page
+  // token until one of them is in the user's dictionary.
+  function lookupCandidate(candidate) {
+    return wordMap[candidate] || null;
   }
 
   function findTitle() {
@@ -250,28 +272,9 @@
   function translateString(text) {
     if (!text) return null;
 
-    const words = text.split(/(\s+)/);
-    let changed = false;
-    const out = [];
+    const { parts, matched } = tokens.segmentText(text, lookupCandidate);
 
-    for (const segment of words) {
-      if (/^\s+$/.test(segment)) {
-        out.push(segment);
-        continue;
-      }
-
-      const clean = segment.replace(/[^\w']/g, "");
-      const lower = clean.toLowerCase();
-
-      if (wordMap[lower]) {
-        out.push(wordMap[lower].translation);
-        changed = true;
-      } else {
-        out.push(segment);
-      }
-    }
-
-    return changed ? out.join("") : null;
+    return matched ? tokens.renderParts(parts) : null;
   }
 
   function getVideoId() {
@@ -535,31 +538,24 @@
     if (isInsideTitle(textNode)) return;
 
     const text = textNode.textContent;
-    const words = text.split(/(\s+)/);
+    const { parts, matched } = tokens.segmentText(text, lookupCandidate);
 
-    let hasMatch = false;
     const fragments = [];
 
-    for (const segment of words) {
-      if (/^\s+$/.test(segment)) {
-        fragments.push(document.createTextNode(segment));
+    for (const part of parts) {
+      if (part.type !== "swap") {
+        fragments.push(document.createTextNode(part.text));
         continue;
       }
 
-      const clean = segment.replace(/[^\w']/g, "");
-      const lower = clean.toLowerCase();
-
-      if (wordMap[lower]) {
-        hasMatch = true;
-        const wordData = wordMap[lower];
-        const span = createReplacementSpan(segment, clean, wordData);
-        fragments.push(span);
-      } else {
-        fragments.push(document.createTextNode(segment));
-      }
+      // Punctuation stays outside the span, so the span holds exactly the word
+      // and hover can swap it back without disturbing the sentence.
+      if (part.prefix) fragments.push(document.createTextNode(part.prefix));
+      fragments.push(createReplacementSpan(part));
+      if (part.suffix) fragments.push(document.createTextNode(part.suffix));
     }
 
-    if (hasMatch) {
+    if (matched) {
       const parent = textNode.parentNode;
       if (!parent) return;
 
@@ -575,16 +571,23 @@
     }
   }
 
-  function createReplacementSpan(originalText, cleanWord, wordData) {
+  function createReplacementSpan(part) {
+    const wordData = part.entry;
+    const cleanWord = part.core;
     const span = document.createElement("span");
     span.className = "linguaswap-word";
     span.dataset.linguaswap = "true";
+    // The word as it appeared on the page, which is what hover reveals and
+    // what gets restored when replacements are removed.
     span.dataset.original = cleanWord;
     span.dataset.originalLower = cleanWord.toLowerCase();
-    span.dataset.translation = wordData.translation;
+    // The dictionary entry behind it. After lemmatization the two differ
+    // ("running" vs "run"), and the API only knows the entry.
+    span.dataset.entry = wordData.original;
+    span.dataset.translation = part.display;
     span.dataset.status = wordData.status;
 
-    span.textContent = wordData.translation;
+    span.textContent = part.display;
 
     if (wordData.status === "hard") {
       span.classList.add("ls-status-hard");
@@ -605,7 +608,7 @@
 
         safeSendMessage({
           type: "RECORD_REVEAL",
-          word: cleanWord,
+          word: wordData.original,
           languagePair,
         });
       }
@@ -615,21 +618,21 @@
       if (revealed) {
         revealed = false;
         span.classList.remove("ls-revealed");
-        span.textContent = span.dataset.displayText || wordData.translation;
+        span.textContent = span.dataset.displayText || part.display;
       }
     });
 
     span.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      showRatingPopup(span, cleanWord);
+      showRatingPopup(span, wordData);
     });
 
     replacementCount++;
     return span;
   }
 
-  function showRatingPopup(span, word) {
+  function showRatingPopup(span, wordData) {
     removeActivePopup();
 
     const popup = document.createElement("div");
@@ -652,7 +655,7 @@
       button.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        rateWord(span, word, btn.status);
+        rateWord(span, wordData, btn.status);
       });
       popup.appendChild(button);
     }
@@ -680,17 +683,19 @@
     activePopup = null;
   }
 
-  function rateWord(span, word, status) {
+  function rateWord(span, wordData, status) {
     span.dataset.status = status;
 
     updateSpanStatusClass(span, status);
 
-    if (wordMap[word]) {
-      wordMap[word].status = status;
-    }
+    // The same entry object sits under both its spelling and its lemma key, so
+    // mutating it here updates every way the word can be looked up.
+    wordData.status = status;
 
-    const lower = word.toLowerCase();
-    const all = document.querySelectorAll(`span.linguaswap-word[data-original="${lower}" i]`);
+    // Every surface form on the page that resolved to this entry moves too:
+    // rating "running" easy also settles "runs" and "ran".
+    const entry = wordData.original.replace(/["\\]/g, "\\$&");
+    const all = document.querySelectorAll(`span.linguaswap-word[data-entry="${entry}" i]`);
     for (const el of all) {
       if (el !== span) {
         el.dataset.status = status;
@@ -700,7 +705,7 @@
 
     safeSendMessage({
       type: "RATE_WORD",
-      word,
+      word: wordData.original,
       languagePair,
       status,
     });

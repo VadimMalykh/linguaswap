@@ -41,6 +41,9 @@ defmodule LinguaswapWeb.ApiController do
 
         %{
           original: word.original_word,
+          # The client keys its lookup table on the lemma as well as the
+          # spelling, so page text like "running" reaches the "run" entry.
+          lemma: word.lemma,
           translation: word.target_translation,
           status: status,
           reveal_count: reveal_count
@@ -53,7 +56,7 @@ defmodule LinguaswapWeb.ApiController do
   def record_reveal(conn, %{"word" => original_word, "language_pair" => language_pair}) do
     user = conn.assigns.current_scope.user
 
-    case Vocabulary.get_word_by_original(original_word, language_pair) do
+    case Vocabulary.get_word_by_original_or_lemma(original_word, language_pair) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -68,7 +71,7 @@ defmodule LinguaswapWeb.ApiController do
   def record_replacement(conn, %{"word" => original_word, "language_pair" => language_pair}) do
     user = conn.assigns.current_scope.user
 
-    case Vocabulary.get_word_by_original(original_word, language_pair) do
+    case Vocabulary.get_word_by_original_or_lemma(original_word, language_pair) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -87,7 +90,7 @@ defmodule LinguaswapWeb.ApiController do
       }) do
     user = conn.assigns.current_scope.user
 
-    case Vocabulary.get_word_by_original(original_word, language_pair) do
+    case Vocabulary.get_word_by_original_or_lemma(original_word, language_pair) do
       nil ->
         conn
         |> put_status(:not_found)

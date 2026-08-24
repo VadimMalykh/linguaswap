@@ -237,7 +237,18 @@ open http://localhost:4000
 
 ## Open Questions
 
-1. How to handle proper nouns/brand names (should never replace)?
-2. What's the minimum word frequency threshold for MVP?
+1. ~~How to handle proper nouns/brand names (should never replace)?~~ **Answered
+   in Phase 2.** Capitalization is only meaningful away from a sentence start, so
+   a capitalized token mid-sentence is treated as a name; at a sentence start
+   only a stoplisted brand is. All-caps runs up to three characters are read as
+   initialisms and left alone, longer ones as shouting and translated. See
+   `isProperNoun` in `chrome-extension/lemmatizer.js`.
+2. What's the minimum word frequency threshold for MVP? **Still open**, and
+   partly overtaken: Phase 1's active pool caps how many words a user carries at
+   once, so the threshold now only decides how deep the *dictionary* goes rather
+   than how much a user sees. It becomes a real decision when a full frequency
+   list is imported.
 3. Should we integrate with existing spaced repetition systems (Anki)?
-4. Rate limiting for LLM calls (cost management)?
+   **Deferred to Phase 6.**
+4. Rate limiting for LLM calls (cost management)? **Deferred to Phase 4**, which
+   is where the first LLM call appears; nothing in the app calls an LLM today.

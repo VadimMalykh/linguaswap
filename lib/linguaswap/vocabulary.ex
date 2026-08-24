@@ -35,6 +35,31 @@ defmodule Linguaswap.Vocabulary do
     Repo.get_by(Word, original_word: original_word, language_pair: language_pair)
   end
 
+  @doc """
+  Resolves a word the extension reported, by spelling or by lemma.
+
+  The client lemmatizes page text, so the token it swapped ("running") is not
+  always the entry it matched ("run"). It sends the entry's own spelling back,
+  but older builds — and any caller working from page text — send the surface
+  form, so the lemma is accepted as a fallback. An exact spelling always wins;
+  among entries sharing a lemma the most frequent one does.
+  """
+  def get_word_by_original_or_lemma(word, language_pair) do
+    normalized = String.downcase(word)
+
+    from(w in Word,
+      where: w.language_pair == ^language_pair,
+      where: w.original_word == ^word or w.lemma == ^normalized,
+      order_by: [
+        asc: fragment("case when ? = ? then 0 else 1 end", w.original_word, ^word),
+        asc_nulls_last: w.frequency_rank,
+        asc: w.id
+      ],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
   def create_word(attrs \\ %{}) do
     %Word{}
     |> Word.changeset(attrs)

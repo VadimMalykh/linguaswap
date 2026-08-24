@@ -78,6 +78,79 @@ defmodule Linguaswap.VocabularyTest do
     end
   end
 
+  describe "get_word_by_original_or_lemma/2" do
+    setup do
+      {:ok, run} =
+        Vocabulary.create_word(%{
+          original_word: "run",
+          target_translation: "correr",
+          language_pair: "en-es",
+          frequency_rank: 100
+        })
+
+      {:ok, running} =
+        Vocabulary.create_word(%{
+          original_word: "running",
+          target_translation: "corriendo",
+          language_pair: "en-es",
+          lemma: "run",
+          frequency_rank: 900
+        })
+
+      %{run: run, running: running}
+    end
+
+    test "finds a word by its own spelling", %{running: running} do
+      assert Vocabulary.get_word_by_original_or_lemma("running", "en-es").id == running.id
+    end
+
+    test "falls back to the lemma when no spelling matches", %{run: run} do
+      {:ok, walking} =
+        Vocabulary.create_word(%{
+          original_word: "walking",
+          target_translation: "caminando",
+          language_pair: "en-es",
+          lemma: "walk"
+        })
+
+      assert Vocabulary.get_word_by_original_or_lemma("walk", "en-es").id == walking.id
+      assert Vocabulary.get_word_by_original_or_lemma("run", "en-es").id == run.id
+    end
+
+    test "prefers an exact spelling over another entry sharing the lemma", %{run: run} do
+      # "run" is both its own entry and the lemma of "running"; the spelling
+      # must win even though the lemma matches too.
+      assert Vocabulary.get_word_by_original_or_lemma("run", "en-es").id == run.id
+    end
+
+    test "is case-insensitive on the lemma" do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "Monday",
+          target_translation: "lunes",
+          language_pair: "en-es"
+        })
+
+      assert Vocabulary.get_word_by_original_or_lemma("Monday", "en-es").id == word.id
+      assert Vocabulary.get_word_by_original_or_lemma("monday", "en-es").id == word.id
+    end
+
+    test "stays within the language pair" do
+      {:ok, _} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "salom",
+          language_pair: "en-uz"
+        })
+
+      assert Vocabulary.get_word_by_original_or_lemma("hello", "en-es") == nil
+    end
+
+    test "returns nil for an unknown word" do
+      assert Vocabulary.get_word_by_original_or_lemma("nonexistent", "en-es") == nil
+    end
+  end
+
   describe "get_or_create_user_word!/2" do
     test "creates user_word for new combination with default hard status" do
       user = AccountsFixtures.user_fixture()
