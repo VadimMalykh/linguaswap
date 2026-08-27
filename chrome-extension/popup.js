@@ -11,6 +11,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const languageSelect = document.getElementById("language-select");
   const logoutBtn = document.getElementById("logout-btn");
   const dashboardLink = document.getElementById("dashboard-link");
+  const serverUrlInput = document.getElementById("server-url");
+  const serverSaveBtn = document.getElementById("server-save");
+  const serverMsg = document.getElementById("server-msg");
 
   chrome.runtime.sendMessage({ type: "GET_STATUS" }, (response) => {
     loading.style.display = "none";
@@ -60,7 +63,55 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
     loadStats();
+    loadServerUrl();
   }
+
+  function loadServerUrl() {
+    chrome.runtime.sendMessage({ type: "GET_SERVER_URL" }, (response) => {
+      if (response && response.ok) serverUrlInput.value = response.serverUrl;
+    });
+  }
+
+  function showServerMsg(text, kind) {
+    serverMsg.textContent = text;
+    serverMsg.className = `server-msg ${kind}`;
+    serverMsg.style.display = "block";
+  }
+
+  // Pointing the extension at another backend needs host access to it, and
+  // Chrome only grants an optional permission from a user gesture — which is
+  // why this lives behind the Save button rather than firing as you type.
+  serverSaveBtn.addEventListener("click", () => {
+    const raw = serverUrlInput.value.trim();
+    let origin;
+
+    try {
+      const parsed = new URL(raw);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        throw new Error("protocol");
+      }
+      origin = `${parsed.origin}/*`;
+    } catch (err) {
+      showServerMsg("Enter a full URL, e.g. https://linguaswap.example.com", "err");
+      return;
+    }
+
+    chrome.permissions.request({ origins: [origin] }, (granted) => {
+      if (chrome.runtime.lastError || !granted) {
+        showServerMsg("Access to that server was not granted", "err");
+        return;
+      }
+
+      chrome.runtime.sendMessage({ type: "SET_SERVER_URL", serverUrl: raw }, (response) => {
+        if (response && response.ok) {
+          serverUrlInput.value = response.serverUrl;
+          showServerMsg("Saved. Reload open tabs to pick it up.", "ok");
+        } else {
+          showServerMsg("Could not save that server", "err");
+        }
+      });
+    });
+  });
 
   function loadStats() {
     chrome.runtime.sendMessage({ type: "GET_STATS" }, (response) => {
@@ -129,6 +180,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   dashboardLink.addEventListener("click", () => {
-    chrome.tabs.create({ url: "http://localhost:4000/dashboard" });
+    chrome.runtime.sendMessage({ type: "GET_SERVER_URL" }, (response) => {
+      const base = (response && response.ok && response.serverUrl) || "http://localhost:4000";
+      chrome.tabs.create({ url: `${base}/dashboard` });
+    });
   });
 });

@@ -17,9 +17,13 @@ in [DESIGN.md](DESIGN.md). Summary:
       `forms`), real frequency ordering, TSV importer
 - [x] **Roadmap Phase 1** — adaptive word intake: per-user active pool with a
       budget, frequency-ordered introduction, graduation refill
+- [x] **Roadmap Phase 2** — English lemmatization in the client, proper-noun guard
+- [x] Real exposure counting: the client reports the swaps it made, and
+      `POST /api/v1/words/replace` takes them in a batch
+- [x] Configurable backend URL in the extension popup
+- [x] en-es dictionary rebuilt from a corpus frequency list (494 entries)
 
 ### Next 📋
-- [ ] **Roadmap Phase 2** — English lemmatization in the client, proper-noun guard
 - [ ] **Roadmap Phase 3** — phrase entries, n-gram tokenizer, density cap
 - [ ] **Roadmap Phase 4** — LLM pipeline for precomputed target inflections
 - [ ] **Roadmap Phase 5** — sentence-level swap
@@ -85,7 +89,8 @@ in [DESIGN.md](DESIGN.md). Summary:
 |--------|-------------|
 | `reveal_count` | Times user hovered/clicked to see translation |
 | `last_revealed` | Timestamp of last reveal |
-| `replacement_count` | Times word was replaced on page |
+| `replacement_count` | Times the word was replaced, counting every occurrence |
+| `exposure_count` | Pages on which the word appeared — one per page, not per occurrence |
 
 **Learning Algorithm:**
 - New words: Show translation immediately

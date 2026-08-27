@@ -5,6 +5,7 @@
   "description": "Learn a language by gradually replacing words on web pages with translations",
   "permissions": ["storage", "activeTab"],
   "host_permissions": ["http://localhost:4000/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

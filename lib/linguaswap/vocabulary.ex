@@ -60,6 +60,38 @@ defmodule Linguaswap.Vocabulary do
     |> Repo.one()
   end
 
+  @doc """
+  Resolves many reported words at once, by spelling or by lemma.
+
+  The batch form of `get_word_by_original_or_lemma/2`, for the swap report the
+  client sends at the end of a page. Returns a map keyed by the *downcased word
+  the caller passed in*, so a caller holding surface forms can find its own
+  entries again without knowing what they resolved to.
+
+  Priority matches the single-word version: an entry whose spelling matches wins
+  over one that only matches by lemma, and among equals the most frequent one
+  does.
+  """
+  def get_words_by_original_or_lemma(words, language_pair) do
+    keys = words |> Enum.map(&String.downcase/1) |> Enum.uniq()
+
+    entries =
+      from(w in Word,
+        where: w.language_pair == ^language_pair,
+        where: fragment("lower(?)", w.original_word) in ^keys or w.lemma in ^keys,
+        order_by: [asc_nulls_last: w.frequency_rank, asc: w.id]
+      )
+      |> Repo.all()
+
+    Enum.reduce(keys, %{}, fn key, acc ->
+      match =
+        Enum.find(entries, &(String.downcase(&1.original_word) == key)) ||
+          Enum.find(entries, &(&1.lemma == key))
+
+      if match, do: Map.put(acc, key, match), else: acc
+    end)
+  end
+
   def create_word(attrs \\ %{}) do
     %Word{}
     |> Word.changeset(attrs)
@@ -128,6 +160,51 @@ defmodule Linguaswap.Vocabulary do
     else
       changeset -> {:error, changeset}
     end
+  end
+
+  @doc """
+  Removes dictionary entries for a language pair that are no longer in a
+  rebuilt word list.
+
+  `keep` is the set of `original_word` values the new list carries. Anything
+  else for that pair is a leftover from a previous list — `upsert_word/1` adds
+  and updates but never removes, so rebuilding a dictionary otherwise leaves the
+  old entries behind, competing for frontier slots and sometimes colliding with
+  a new entry on lemma.
+
+  **Entries a user has progress on are never deleted.** `user_words.word_id`
+  cascades on delete, so pruning one would silently destroy that user's reveal,
+  replacement and exposure history along with it. Those are returned instead, so
+  the caller can decide — merging progress onto the replacement entry is a
+  judgement call about user data, not something an import should do on its own.
+
+  Returns `%{deleted: n, retained: [%Word{}, ...]}`.
+  """
+  def prune_words(language_pair, keep) do
+    keep = MapSet.new(keep)
+
+    candidates =
+      from(w in Word, where: w.language_pair == ^language_pair)
+      |> Repo.all()
+      |> Enum.reject(&MapSet.member?(keep, &1.original_word))
+
+    ids = Enum.map(candidates, & &1.id)
+
+    with_progress =
+      from(uw in UserWord, where: uw.word_id in ^ids, select: uw.word_id, distinct: true)
+      |> Repo.all()
+      |> MapSet.new()
+
+    {retained, removable} =
+      Enum.split_with(candidates, &MapSet.member?(with_progress, &1.id))
+
+    {deleted, _} =
+      case Enum.map(removable, & &1.id) do
+        [] -> {0, nil}
+        removable_ids -> Repo.delete_all(from(w in Word, where: w.id in ^removable_ids))
+      end
+
+    %{deleted: deleted, retained: retained}
   end
 
   def get_user_word(user_id, word_id) do
@@ -205,29 +282,105 @@ defmodule Linguaswap.Vocabulary do
 
   def rate_word(_user_id, _word_id, _status), do: {:error, :invalid_status}
 
-  def increment_exposure(user_id, language_pair) do
-    user_word_ids =
-      from(uw in UserWord,
-        join: w in Word,
-        on: w.id == uw.word_id,
-        where: uw.user_id == ^user_id,
-        where: w.language_pair == ^language_pair,
-        where: uw.status in ["hard", "simple"],
-        select: uw.id
-      )
-      |> Repo.all()
+  @doc """
+  Records the words the client actually swapped on one page.
 
-    unless user_word_ids == [] do
-      from(uw in UserWord, where: uw.id in ^user_word_ids)
-      |> Repo.update_all(inc: [exposure_count: 1])
-    end
+  `counts` maps a word the client swapped to how many times it appeared. The key
+  is resolved the same way a reveal or a rating is, by
+  `get_words_by_original_or_lemma/2` — so it is the dictionary spelling the
+  client was served, not the inflected form it found on the page. Lemmatizing
+  page text stays the client's job.
+
+  The two counters move differently on purpose:
+
+    * `replacement_count` gains every occurrence, because that is literally how
+      often the word was put on the page.
+    * `exposure_count` gains exactly **one**, because an exposure is "the user
+      met this word while reading", and a page that happens to repeat a word
+      twenty times is still one encounter. The auto-promotion thresholds
+      (50 `hard` → `simple`, 100 `simple` → `trivial`) are tuned to that reading.
+
+  This replaces the blanket per-page-visit increment that used to bump every
+  active word whether or not it appeared, which promoted words the user had
+  never actually seen.
+
+  Words the dictionary does not know are skipped. Returns a summary of what was
+  recorded and the pool state after any graduations were refilled.
+  """
+  def record_word_replacements(user_id, language_pair, counts) when is_map(counts) do
+    now = DateTime.utc_now(:second)
+    resolved = get_words_by_original_or_lemma(Map.keys(counts), language_pair)
+
+    # Several surface forms reach the same entry ("run", "running", "ran"), and
+    # Postgres refuses to let one ON CONFLICT statement touch the same row
+    # twice, so occurrences are merged per entry before the write.
+    per_word =
+      Enum.reduce(counts, %{}, fn {word, count}, acc ->
+        case Map.get(resolved, String.downcase(word)) do
+          nil -> acc
+          %Word{id: id} -> Map.update(acc, id, sane_count(count), &(&1 + sane_count(count)))
+        end
+      end)
+
+    rows =
+      Enum.map(per_word, fn {word_id, count} ->
+        %{
+          user_id: user_id,
+          word_id: word_id,
+          status: "hard",
+          reveal_count: 0,
+          replacement_count: count,
+          exposure_count: 1,
+          activated_at: now,
+          inserted_at: now,
+          updated_at: now
+        }
+      end)
+
+    user_word_ids = upsert_replacement_counts(rows, now)
 
     check_auto_promotions(user_id, user_word_ids)
 
-    # Auto-promotion to `trivial` is the main way budget frees up, so the pool
-    # is refilled on the same pass rather than waiting for the next page load.
+    # Promotion to `trivial` is the main way budget frees up, so the pool is
+    # topped back up on the same pass rather than waiting for the next page load.
     ensure_active_pool(user_id, language_pair)
+
+    %{
+      recorded: map_size(per_word),
+      skipped: map_size(counts) - map_size(per_word),
+      pool: pool_stats(user_id, language_pair)
+    }
   end
+
+  defp upsert_replacement_counts([], _now), do: []
+
+  defp upsert_replacement_counts(rows, now) do
+    # The row may not exist yet (a word reported before the pool put it there),
+    # so this is an insert that folds into the existing counters on conflict.
+    {_count, returned} =
+      Repo.insert_all(UserWord, rows,
+        on_conflict:
+          from(uw in UserWord,
+            update: [
+              set: [
+                replacement_count:
+                  fragment("? + EXCLUDED.replacement_count", uw.replacement_count),
+                exposure_count: fragment("? + 1", uw.exposure_count),
+                updated_at: ^now
+              ]
+            ]
+          ),
+        conflict_target: [:user_id, :word_id],
+        returning: [:id]
+      )
+
+    Enum.map(returned, & &1.id)
+  end
+
+  # A count comes from the extension, so it is clamped rather than trusted: at
+  # least one occurrence, and not enough of them to inflate a counter outright.
+  defp sane_count(count) when is_integer(count) and count > 0, do: min(count, 1_000)
+  defp sane_count(_), do: 1
 
   defp refill_pool_for_word(user_id, word_id) do
     case Repo.get(Word, word_id) do

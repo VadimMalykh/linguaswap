@@ -24,8 +24,8 @@ before 5 keeps the runtime client dumb and fast (Q4 "precompute-first").
 Both test suites pass:
 
 ```bash
-docker compose exec -e MIX_ENV=test app mix test              # 192 tests
-docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 18 tests
+docker compose exec -e MIX_ENV=test app mix test              # 200 tests
+docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 23 tests
 ```
 
 ## What works today
@@ -57,35 +57,36 @@ Ordered by how much it limits real use.
 
 | Gap | Why it matters | Addressed by |
 | --- | --- | --- |
-| **The dictionary holds 197 entries** (99 en-es, 98 en-uz) | The budget alone is 50, so a user nearly exhausts the data. The importer exists and is unused on a real list. | Unscheduled — see below |
-| **Localhost only** | `manifest.json` allows `http://localhost:4000/*` and `background.js` hardcodes that API base. Nobody else can run it. | Unscheduled |
 | **Single words only** | "a lot of" cannot be an entry; the tokenizer walks one whitespace segment at a time. | Phase 3 |
 | **No density cap** | A word-dense page can be swapped into pidgin. Nothing limits swaps per sentence. | Phase 3 |
 | **Base-form output only** | The target side is always the dictionary form: "she ser running", never "she era". | Phase 4 |
 | **No LLM anywhere** | Translations, POS and inflected forms are all hand-authored TSV. | Phase 4 |
-| **Exposure counting is approximate** | `increment_exposure/2` bumps every active word on any page visit, whether or not the word appeared. Auto-promotion is driven by that count, so it runs faster than real exposure warrants. | Unscheduled |
+| **en-uz is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. | Phase 4, or a native reviewer |
 | **No UI for the word budget** | Settable only through `PUT /api/v1/settings` under `settings.word_budget`. | Unscheduled |
 
 ### Unscheduled work (no phase owns these)
 
-- [ ] **Import a real frequency list.** `mix linguaswap.import_words` has been
-      built and tested since Phase 0 but has only ever been fed the seed TSVs.
-      This is the cheapest large win available and blocks nothing.
-- [ ] **Make the backend reachable.** A configurable API base in
-      `background.js` plus matching `host_permissions`, so the extension can
-      point at something other than `localhost:4000`.
-- [ ] **Wire up `POST /api/v1/words/replace`.** The route, the controller
-      action, `Vocabulary.record_word_replacement/2` and the background
-      handler for `RECORD_REPLACEMENT` all exist, but **nothing in the content
-      script ever sends it**. Sending it per actual on-page swap is what would
-      make exposure counts real, and would retire the blanket increment in
+- [x] **Import a real frequency list.** ~~`mix linguaswap.import_words` has only
+      ever been fed the seed TSVs.~~ Done for en-es: `priv/data/en-es.tsv` now
+      holds 494 entries in OpenSubtitles-2018 frequency order, built by
+      `priv/data/build_dictionary.py`. en-uz is untouched — see the gap table.
+- [x] **Make the backend reachable.** ~~A configurable API base in
+      `background.js` plus matching `host_permissions`.~~ Done: the server URL
+      is stored in `chrome.storage.local` and set from the popup, which requests
+      the matching host permission at the same time.
+- [x] **Wire up `POST /api/v1/words/replace`.** ~~Nothing in the content script
+      ever sends it.~~ Done: the content script batches the swaps it actually
+      made and posts them once the page settles, and
+      `Vocabulary.record_word_replacements/3` replaced the blanket
       `increment_exposure/2`.
-- [ ] **Turn off the title tracer.** `titleDebug` in `content.js` is `true`, so
-      every page logs `LS-TITLE …` to the console, as does the load banner.
+- [x] **Turn off the title tracer.** ~~`titleDebug` is `true`.~~ Done: one
+      `DEBUG` constant at the top of `content.js` now gates the title trace and
+      the load banner together.
 - [ ] **A budget control in the dashboard.**
-- [ ] **DOM-level tests for the content script.** `lemmatizer.js` is covered;
-      `content.js` — the walker, the mutation observer, the title pipeline — is
-      not, and has no harness.
+- [ ] **DOM-level tests for the content script.** `lemmatizer.js` and
+      `background.js` are covered; `content.js` — the walker, the mutation
+      observer, the title pipeline, and now the swap-report batching — is not,
+      and has no harness. Phase 3 lands squarely in that untested code.
 
 ---
 
@@ -250,14 +251,17 @@ words only enter as others graduate.
 
 - `ApiController.get_words/2` — every extension page load.
 - `Vocabulary.rate_word/3` — when the user rates a word "Easy" (`trivial`).
-- `Vocabulary.increment_exposure/2` — after auto-promotion on a page visit.
+- `Vocabulary.record_word_replacements/3` — after auto-promotion on a reported
+  page of swaps.
 
 ### How a word graduates
 
 - **By rating**: the user picks "Easy" in the popup.
 - **By exposure**: `hard` → `simple` at 50 exposures with zero reveals,
-  `simple` → `trivial` at 100. Exposure is counted per page visit for every
-  active word, not per actual on-page swap — see the gap table above.
+  `simple` → `trivial` at 100. One exposure means **one page on which the word
+  actually appeared**, reported by the content script — not one page visit, and
+  not one occurrence. A page that repeats a word twenty times is still one
+  encounter, which is what keeps a single article from graduating a word.
 
 ### Surfaces
 
@@ -332,6 +336,85 @@ Against the live 50-word dev pool, "The Apple was on the table, and it had been
 there for two days." becomes "El Apple ser en el table, y ello tener ser allí
 para two days." — `was`, `had` and `been` all reach their lemmas, `Apple` is
 left alone as a name, and the comma and full stop stay put.
+
+## What the unscheduled pass built
+
+Four items from the list above, done after Phase 2 and before Phase 3 started.
+
+### Real exposure counting
+
+`Vocabulary.increment_exposure/2` is gone. In its place,
+`Vocabulary.record_word_replacements/3` takes the words a page actually showed
+and moves two counters differently:
+
+- `replacement_count` gains **every occurrence** — that is literally how often
+  the word was put on the page.
+- `exposure_count` gains **exactly one** — an exposure is "the user met this
+  word while reading", and the 50/100 promotion thresholds are tuned to that.
+
+`POST /api/v1/words/replace` grew a batch body,
+`{"words": [{"word": "run", "count": 3}], "language_pair": "en-es"}`, and still
+accepts a bare list or the original single-`word` form so an older extension
+build keeps working. `POST /api/v1/pagevisit` no longer touches exposure at all;
+it is history and timing only.
+
+On the client, `noteSwap` tallies each entry as it is swapped — from the page
+walker and the YouTube title path both — and `flushSwapReport` posts the batch
+once, 2.5s after the last swap, on a hidden tab, and before unload. **Each entry
+is reported once per page**: later occurrences of an already-reported word are
+dropped rather than re-sent, which keeps one page worth exactly one exposure no
+matter how many times the mutation observer re-runs.
+
+### A configurable server
+
+`background.js` resolves its API base at call time from
+`chrome.storage.local.serverUrl`, defaulting to `http://localhost:4000`. The
+popup has a Server field; saving it calls `chrome.permissions.request` for that
+origin first, which is why the manifest keeps `host_permissions` at localhost
+and adds `optional_host_permissions`. `normalizeServerUrl` absorbs trailing
+slashes and a pasted `/api/v1` — the two things people actually type — and is
+covered by `chrome-extension/test/background.test.js`.
+
+### A real dictionary for en-es
+
+`priv/data/en-es.tsv` went from 99 hand-authored entries to 494 in corpus
+frequency order, built by `priv/data/build_dictionary.py` from the
+OpenSubtitles-2018 English frequency list. The important part is that the
+reduction uses **the extension's own lemmatizer**, so the dictionary and the
+runtime agree on what a distinct word is: "is", "are" and "was" collapse into
+one "be" entry rather than wasting three.
+
+Two judgement calls are worth knowing about, both documented in the script:
+
+1. **Irregulars are trusted, suffix guesses are not.** The irregular map is
+   hand-curated, so its base is taken outright. A `-ed`/`-ing` base is only
+   believed if the corpus shows it is common in its own right — that is what
+   rejects "need" → "nee" and "something" → "someth", which the bare suffix
+   rules do produce.
+2. **Plural stripping is trusted.** It cannot reach a shorter word with an
+   unrelated meaning the way `-ed` can, so the entry lands on "eye" rather than
+   "eyes", and both forms on a page find it.
+
+`candidates()` is ported to Python there and is the one thing that can drift
+from the JS; `priv/data/dump_candidates.js` exists to diff the two.
+
+Rebuilding a dictionary also surfaced a gap in the importer: it upserts, so the
+99 old en-es entries did not go away when the file was replaced, and two of them
+survived — `begin`, and a capitalised `I` that collided with the new `i` on
+lemma and cost every user a pool slot. `mix linguaswap.import_words --prune`
+now deletes entries a rebuilt file no longer carries. It never deletes one a
+user has progress on, because `user_words.word_id` cascades and would take that
+history with it; those are reported for a human to resolve instead. Resolving
+the `I` case meant repointing its `user_words` rows onto the new entry before
+deleting it.
+
+Both test suites pass at 204 Elixir / 23 JS, and the dev database now holds
+exactly the 494 entries the file carries.
+
+### Quieter console
+
+One `DEBUG` constant at the top of `content.js` gates both the title trace and
+the load banner.
 
 ## Picking up Phase 3
 

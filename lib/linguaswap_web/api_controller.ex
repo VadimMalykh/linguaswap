@@ -68,6 +68,30 @@ defmodule LinguaswapWeb.ApiController do
     end
   end
 
+  @doc """
+  Records the swaps the client made on one page.
+
+  The batch form is what the content script sends once a page has settled:
+
+      {"words": [{"word": "run", "count": 3}, {"word": "be", "count": 7}],
+       "language_pair": "en-es"}
+
+  A bare list of words is accepted too, as is the original single-`word` body,
+  so an older extension build keeps working.
+  """
+  def record_replacement(conn, %{"words" => words, "language_pair" => language_pair})
+      when is_list(words) do
+    user = conn.assigns.current_scope.user
+    summary = Vocabulary.record_word_replacements(user.id, language_pair, swap_counts(words))
+
+    json(conn, %{
+      success: true,
+      recorded: summary.recorded,
+      skipped: summary.skipped,
+      pool: summary.pool
+    })
+  end
+
   def record_replacement(conn, %{"word" => original_word, "language_pair" => language_pair}) do
     user = conn.assigns.current_scope.user
 
@@ -78,10 +102,31 @@ defmodule LinguaswapWeb.ApiController do
         |> json(%{error: "Word not found"})
 
       word ->
-        {:ok, _} = Vocabulary.record_word_replacement(user.id, word.id)
-        json(conn, %{success: true})
+        # Routed through the batch path so a single report counts as an exposure
+        # too, exactly as one entry in a batch of one would.
+        summary =
+          Vocabulary.record_word_replacements(user.id, language_pair, %{word.original_word => 1})
+
+        json(conn, %{success: true, recorded: summary.recorded})
     end
   end
+
+  # Accepts ["run", "be"] as well as [%{"word" => "run", "count" => 3}].
+  defp swap_counts(words) do
+    Enum.reduce(words, %{}, fn
+      %{"word" => word} = entry, acc when is_binary(word) ->
+        Map.update(acc, word, count_of(entry), &(&1 + count_of(entry)))
+
+      word, acc when is_binary(word) ->
+        Map.update(acc, word, 1, &(&1 + 1))
+
+      _, acc ->
+        acc
+    end)
+  end
+
+  defp count_of(%{"count" => count}) when is_integer(count) and count > 0, do: count
+  defp count_of(_), do: 1
 
   def rate_word(conn, %{
         "word" => original_word,
@@ -117,27 +162,10 @@ defmodule LinguaswapWeb.ApiController do
     end
   end
 
-  def record_page_visit(conn, %{
-        "url" => url,
-        "words_replaced" => words_replaced,
-        "time_spent" => time_spent,
-        "language_pair" => language_pair
-      }) do
-    user = conn.assigns.current_scope.user
-
-    Vocabulary.increment_exposure(user.id, language_pair)
-
-    {:ok, _} =
-      Vocabulary.create_page_visit(%{
-        user_id: user.id,
-        url: url,
-        words_replaced: words_replaced,
-        time_spent_seconds: time_spent
-      })
-
-    json(conn, %{success: true})
-  end
-
+  # A page visit is history and timing only. Exposure used to be counted here,
+  # for every active word at once — see `Vocabulary.record_word_replacements/3`,
+  # which now counts the words the page actually showed. `language_pair` is
+  # still accepted so older extension builds post successfully.
   def record_page_visit(conn, %{
         "url" => url,
         "words_replaced" => words_replaced,

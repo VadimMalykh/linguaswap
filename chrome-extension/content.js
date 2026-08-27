@@ -12,6 +12,20 @@
   let titleElement = null;
   let currentTitleVideoId = null;
 
+  // Swaps actually made on this page, keyed by dictionary entry. Reported in
+  // one batch so the backend can count real exposure instead of crediting every
+  // active word on every page visit.
+  let swapCounts = Object.create(null);
+  let reportedEntries = new Set();
+  let swapReportTimer = null;
+
+  // Long enough to let the second walk and the first mutation batch land, so a
+  // page reports once rather than three times.
+  const SWAP_REPORT_DELAY = 2500;
+
+  // Set to true to trace the YouTube title pipeline in the console.
+  const DEBUG = false;
+
   const SKIP_TAGS = new Set([
     "SCRIPT", "STYLE", "TEXTAREA", "INPUT", "SELECT",
     "CODE", "PRE", "SVG", "MATH", "IFRAME",
@@ -24,7 +38,7 @@
   // live in lemmatizer.js, which the manifest loads before this file.
   const tokens = globalThis.LinguaSwapLemmatizer;
 
-  console.log("LinguaSwap content script loaded (title-fix v2)");
+  if (DEBUG) console.log("LinguaSwap content script loaded (title-fix v2)");
 
   function safeSendMessage(message, callback) {
     try {
@@ -147,6 +161,9 @@
     lastUrl = window.location.href;
     startTime = now;
     replacementCount = 0;
+    // A YouTube navigation is a new page: whatever it shows counts again.
+    flushSwapReport();
+    resetSwapReport();
 
     try {
       translateTitle();
@@ -273,8 +290,16 @@
     if (!text) return null;
 
     const { parts, matched } = tokens.segmentText(text, lookupCandidate);
+    if (!matched) return null;
 
-    return matched ? tokens.renderParts(parts) : null;
+    // A translated title is exposure like any other swap. The title watchers
+    // re-run this on the same text, which is harmless: an entry is only ever
+    // reported once per page.
+    for (const part of parts) {
+      if (part.type === "swap") noteSwap(part.entry.original);
+    }
+
+    return tokens.renderParts(parts);
   }
 
   function getVideoId() {
@@ -331,7 +356,7 @@
 
   // Trace logging for the title pipeline. Behind a flag we can flip to true
   // once, so we do not spam the console in normal operation.
-  let titleDebug = true;
+  let titleDebug = DEBUG;
 
   function tlog(...args) {
     if (titleDebug) console.log("LS-TITLE", ...args);
@@ -629,7 +654,47 @@
     });
 
     replacementCount++;
+    noteSwap(wordData.original);
     return span;
+  }
+
+  // The entry behind a swap, not the surface form: the API resolves dictionary
+  // spellings, and lemmatizing page text is this side's job.
+  function noteSwap(entry) {
+    // Each entry is reported once per page. A word met twice in an article is
+    // still one encounter, and the report is what drives promotion.
+    if (!entry || reportedEntries.has(entry)) return;
+    swapCounts[entry] = (swapCounts[entry] || 0) + 1;
+
+    if (swapReportTimer) clearTimeout(swapReportTimer);
+    swapReportTimer = setTimeout(flushSwapReport, SWAP_REPORT_DELAY);
+  }
+
+  function flushSwapReport() {
+    if (swapReportTimer) {
+      clearTimeout(swapReportTimer);
+      swapReportTimer = null;
+    }
+
+    const words = Object.keys(swapCounts).map((word) => ({
+      word,
+      count: swapCounts[word],
+    }));
+    if (words.length === 0) return;
+
+    for (const { word } of words) reportedEntries.add(word);
+    swapCounts = Object.create(null);
+
+    safeSendMessage({ type: "RECORD_REPLACEMENTS", words, languagePair });
+  }
+
+  function resetSwapReport() {
+    if (swapReportTimer) {
+      clearTimeout(swapReportTimer);
+      swapReportTimer = null;
+    }
+    swapCounts = Object.create(null);
+    reportedEntries = new Set();
   }
 
   function showRatingPopup(span, wordData) {
@@ -769,6 +834,7 @@
     }, 30000);
 
     window.addEventListener("beforeunload", () => {
+      flushSwapReport();
       const elapsed = Math.round((Date.now() - startTime) / 1000);
       if (replacementCount > 0) {
         safeSendMessage({
@@ -781,4 +847,9 @@
       }
     });
   }
+
+  // beforeunload does not always fire; a hidden tab is the reliable signal.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSwapReport();
+  });
 })();

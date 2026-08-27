@@ -165,6 +165,67 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
       assert %{"error" => "Word not found"} = json_response(conn, 404)
     end
+
+    test "records a batch of swaps with their occurrence counts", %{conn: conn, user: user} do
+      {:ok, hello} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      {:ok, world} =
+        Vocabulary.create_word(%{
+          original_word: "world",
+          target_translation: "mundo",
+          language_pair: "en-es"
+        })
+
+      conn =
+        post(conn, ~p"/api/v1/words/replace", %{
+          "words" => [
+            %{"word" => "hello", "count" => 3},
+            %{"word" => "world", "count" => 1}
+          ],
+          "language_pair" => "en-es"
+        })
+
+      assert %{"success" => true, "recorded" => 2, "skipped" => 0, "pool" => pool} =
+               json_response(conn, 200)
+
+      assert is_map(pool)
+      assert Vocabulary.get_user_word(user.id, hello.id).replacement_count == 3
+      assert Vocabulary.get_user_word(user.id, hello.id).exposure_count == 1
+      assert Vocabulary.get_user_word(user.id, world.id).replacement_count == 1
+    end
+
+    test "accepts a bare list of words", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "hello",
+          target_translation: "hola",
+          language_pair: "en-es"
+        })
+
+      conn =
+        post(conn, ~p"/api/v1/words/replace", %{
+          "words" => ["hello", "hello"],
+          "language_pair" => "en-es"
+        })
+
+      assert %{"success" => true, "recorded" => 1} = json_response(conn, 200)
+      assert Vocabulary.get_user_word(user.id, word.id).replacement_count == 2
+    end
+
+    test "reports words it could not resolve as skipped", %{conn: conn} do
+      conn =
+        post(conn, ~p"/api/v1/words/replace", %{
+          "words" => ["nonexistent"],
+          "language_pair" => "en-es"
+        })
+
+      assert %{"success" => true, "recorded" => 0, "skipped" => 1} = json_response(conn, 200)
+    end
   end
 
   describe "POST /api/v1/words/rate" do
@@ -241,7 +302,7 @@ defmodule LinguaswapWeb.ApiControllerTest do
   end
 
   describe "POST /api/v1/pagevisit" do
-    test "records a page visit and increments exposure", %{conn: conn, user: user} do
+    test "records a page visit without crediting exposure", %{conn: conn, user: user} do
       {:ok, word} =
         Vocabulary.create_word(%{
           original_word: "hello",
@@ -261,8 +322,10 @@ defmodule LinguaswapWeb.ApiControllerTest do
 
       assert json_response(conn, 200)["success"] == true
 
+      # Exposure belongs to POST /words/replace, which knows what the page
+      # actually showed; a visit on its own says nothing about any given word.
       user_word = Vocabulary.get_user_word(user.id, word.id)
-      assert user_word.exposure_count == 1
+      assert user_word.exposure_count == 0
     end
 
     test "records a page visit without language_pair", %{conn: conn} do

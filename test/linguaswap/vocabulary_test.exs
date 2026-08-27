@@ -302,46 +302,146 @@ defmodule Linguaswap.VocabularyTest do
     end
   end
 
-  describe "increment_exposure/2" do
-    test "increments exposure_count for hard and simple words" do
-      user = AccountsFixtures.user_fixture()
-
+  describe "prune_words/2" do
+    defp dict_word(original, translation, rank) do
       {:ok, word} =
         Vocabulary.create_word(%{
-          original_word: "hello",
-          target_translation: "hola",
+          original_word: original,
+          target_translation: translation,
+          language_pair: "en-es",
+          frequency_rank: rank
+        })
+
+      word
+    end
+
+    test "removes entries a rebuilt list no longer carries" do
+      keep = dict_word("hello", "hola", 1)
+      stale = dict_word("begin", "empezar", 93)
+
+      assert %{deleted: 1, retained: []} = Vocabulary.prune_words("en-es", ["hello"])
+
+      assert Vocabulary.get_word_by_original("hello", "en-es").id == keep.id
+      refute Vocabulary.get_word_by_original("begin", "en-es")
+      refute Linguaswap.Repo.get(Linguaswap.Vocabulary.Word, stale.id)
+    end
+
+    test "never deletes an entry a user has progress on" do
+      user = AccountsFixtures.user_fixture()
+      dict_word("hello", "hola", 1)
+      stale = dict_word("I", "yo", 10)
+
+      Vocabulary.record_word_reveal(user.id, stale.id)
+
+      # user_words cascades on delete, so pruning this row would take the
+      # user's history with it. It is reported for a human instead.
+      assert %{deleted: 0, retained: [retained]} = Vocabulary.prune_words("en-es", ["hello"])
+      assert retained.id == stale.id
+      assert Linguaswap.Repo.get(Linguaswap.Vocabulary.Word, stale.id)
+      assert Vocabulary.get_user_word(user.id, stale.id)
+    end
+
+    test "leaves other language pairs alone" do
+      {:ok, uz} =
+        Vocabulary.create_word(%{
+          original_word: "begin",
+          target_translation: "boshlamoq",
+          language_pair: "en-uz",
+          frequency_rank: 93
+        })
+
+      dict_word("begin", "empezar", 93)
+
+      assert %{deleted: 1} = Vocabulary.prune_words("en-es", [])
+      assert Linguaswap.Repo.get(Linguaswap.Vocabulary.Word, uz.id)
+    end
+
+    test "is a no-op when the list still carries everything" do
+      dict_word("hello", "hola", 1)
+      dict_word("world", "mundo", 2)
+
+      assert %{deleted: 0, retained: []} =
+               Vocabulary.prune_words("en-es", ["hello", "world"])
+    end
+  end
+
+  describe "record_word_replacements/3" do
+    defp swap_word(user, original \\ "hello", translation \\ "hola") do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: original,
+          target_translation: translation,
           language_pair: "en-es"
         })
 
-      user_word = Vocabulary.get_or_create_user_word!(user.id, word.id)
-      assert user_word.exposure_count == 0
+      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      word
+    end
 
-      Vocabulary.increment_exposure(user.id, "en-es")
+    test "counts every occurrence as a replacement but the page as one exposure" do
+      user = AccountsFixtures.user_fixture()
+      word = swap_word(user)
+
+      assert %{recorded: 1, skipped: 0} =
+               Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 7})
 
       updated = Vocabulary.get_user_word(user.id, word.id)
+      assert updated.replacement_count == 7
       assert updated.exposure_count == 1
     end
 
-    test "does not increment exposure for trivial words" do
+    test "leaves words the page never showed untouched" do
+      user = AccountsFixtures.user_fixture()
+      seen = swap_word(user, "hello", "hola")
+      unseen = swap_word(user, "world", "mundo")
+
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 1})
+
+      assert Vocabulary.get_user_word(user.id, seen.id).exposure_count == 1
+      # The regression this function exists for: exposure used to be credited to
+      # every active word on any page visit, whether or not it appeared.
+      assert Vocabulary.get_user_word(user.id, unseen.id).exposure_count == 0
+    end
+
+    test "folds keys that reach the same entry into one row" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word} =
         Vocabulary.create_word(%{
-          original_word: "hello",
-          target_translation: "hola",
-          language_pair: "en-es"
+          original_word: "run",
+          target_translation: "correr",
+          language_pair: "en-es",
+          lemma: "run"
         })
 
       Vocabulary.get_or_create_user_word!(user.id, word.id)
-      Vocabulary.rate_word(user.id, word.id, "trivial")
 
-      Vocabulary.increment_exposure(user.id, "en-es")
+      # A sentence-initial "Run" and a mid-sentence "run" are one entry. Both
+      # must land on a single row: Postgres refuses an ON CONFLICT that touches
+      # the same row twice in one statement.
+      assert %{recorded: 1} =
+               Vocabulary.record_word_replacements(user.id, "en-es", %{
+                 "run" => 2,
+                 "Run" => 3
+               })
 
       updated = Vocabulary.get_user_word(user.id, word.id)
-      assert updated.exposure_count == 0
+      assert updated.replacement_count == 5
+      assert updated.exposure_count == 1
     end
 
-    test "auto-promotes hard to simple after 50 exposures with 0 reveals" do
+    test "skips words the dictionary does not know" do
+      user = AccountsFixtures.user_fixture()
+      swap_word(user)
+
+      assert %{recorded: 1, skipped: 1} =
+               Vocabulary.record_word_replacements(user.id, "en-es", %{
+                 "hello" => 1,
+                 "bewilderment" => 1
+               })
+    end
+
+    test "creates the row for a word reported before the pool held it" do
       user = AccountsFixtures.user_fixture()
 
       {:ok, word} =
@@ -351,45 +451,65 @@ defmodule Linguaswap.VocabularyTest do
           language_pair: "en-es"
         })
 
-      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      refute Vocabulary.get_user_word(user.id, word.id)
+
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 2})
+
+      user_word = Vocabulary.get_user_word(user.id, word.id)
+      assert user_word.status == "hard"
+      assert user_word.replacement_count == 2
+      assert user_word.exposure_count == 1
+    end
+
+    test "clamps a count the client got wrong" do
+      user = AccountsFixtures.user_fixture()
+      word = swap_word(user)
+
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => -4})
+
+      assert Vocabulary.get_user_word(user.id, word.id).replacement_count == 1
+    end
+
+    test "auto-promotes hard to simple after 50 pages with 0 reveals" do
+      user = AccountsFixtures.user_fixture()
+      word = swap_word(user)
 
       for _ <- 1..49 do
-        Vocabulary.increment_exposure(user.id, "en-es")
+        Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 1})
       end
 
-      uw = Vocabulary.get_user_word(user.id, word.id)
-      assert uw.status == "hard"
+      assert Vocabulary.get_user_word(user.id, word.id).status == "hard"
 
-      Vocabulary.increment_exposure(user.id, "en-es")
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 1})
 
-      uw = Vocabulary.get_user_word(user.id, word.id)
-      assert uw.status == "simple"
+      assert Vocabulary.get_user_word(user.id, word.id).status == "simple"
     end
 
-    test "auto-promotes simple to trivial after 100 exposures with 0 reveals" do
+    test "auto-promotes simple to trivial after 100 pages with 0 reveals" do
       user = AccountsFixtures.user_fixture()
-
-      {:ok, word} =
-        Vocabulary.create_word(%{
-          original_word: "hello",
-          target_translation: "hola",
-          language_pair: "en-es"
-        })
-
-      Vocabulary.get_or_create_user_word!(user.id, word.id)
+      word = swap_word(user)
       Vocabulary.rate_word(user.id, word.id, "simple")
 
       for _ <- 1..99 do
-        Vocabulary.increment_exposure(user.id, "en-es")
+        Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 1})
       end
 
-      uw = Vocabulary.get_user_word(user.id, word.id)
-      assert uw.status == "simple"
+      assert Vocabulary.get_user_word(user.id, word.id).status == "simple"
 
-      Vocabulary.increment_exposure(user.id, "en-es")
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 1})
 
-      uw = Vocabulary.get_user_word(user.id, word.id)
-      assert uw.status == "trivial"
+      assert Vocabulary.get_user_word(user.id, word.id).status == "trivial"
+    end
+
+    test "a word repeated on one page does not race through the thresholds" do
+      user = AccountsFixtures.user_fixture()
+      word = swap_word(user)
+
+      # 60 occurrences on a single page is one encounter, not 60. Counting them
+      # as exposures would graduate the word off the back of one article.
+      Vocabulary.record_word_replacements(user.id, "en-es", %{"hello" => 60})
+
+      assert Vocabulary.get_user_word(user.id, word.id).status == "hard"
     end
   end
 
@@ -844,7 +964,7 @@ defmodule Linguaswap.VocabularyTest do
       assert length(served) == 3
     end
 
-    test "auto-promotion on page visits refills the pool", %{user: user, words: words} do
+    test "auto-promotion on reported swaps refills the pool", %{user: user, words: words} do
       Vocabulary.ensure_active_pool(user.id, "en-es")
 
       # Drive the first word to the auto-promotion thresholds without reveals.
@@ -856,7 +976,7 @@ defmodule Linguaswap.VocabularyTest do
         |> Linguaswap.Vocabulary.UserWord.changeset(%{status: "simple", exposure_count: 100})
         |> Linguaswap.Repo.update()
 
-      Vocabulary.increment_exposure(user.id, "en-es")
+      Vocabulary.record_word_replacements(user.id, "en-es", %{first.original_word => 1})
 
       assert Vocabulary.get_user_word(user.id, first.id).status == "trivial"
 

@@ -253,6 +253,33 @@
       color: #6b7280;
       margin-bottom: 4px;
     }
+
+    .server-row {
+      display: flex;
+      gap: 6px;
+    }
+
+    .server-row input {
+      flex: 1;
+      min-width: 0;
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .server-row input:focus { border-color: #059669; }
+    .server-row .btn { padding: 7px 12px; font-size: 12px; }
+
+    .server-msg {
+      font-size: 11px;
+      margin-top: 5px;
+      display: none;
+    }
+
+    .server-msg.ok { color: #059669; }
+    .server-msg.err { color: #dc2626; }
   </style>
 </head>
 <body>
@@ -313,6 +340,16 @@
           <option value="en-es">English to Spanish</option>
           <option value="en-uz">English to Uzbek</option>
         </select>
+      </div>
+
+      <div>
+        <div class="lang-label">Server</div>
+        <div class="server-row">
+          <input type="url" id="server-url" placeholder="http://localhost:4000"
+                 spellcheck="false" autocomplete="off">
+          <button class="btn btn-secondary" id="server-save">Save</button>
+        </div>
+        <div id="server-msg" class="server-msg"></div>
       </div>
     </div>
 

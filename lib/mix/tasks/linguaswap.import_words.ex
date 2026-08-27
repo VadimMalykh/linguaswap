@@ -24,6 +24,18 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
     * `--language-pair` - overrides the pair inferred from the file name
     * `--source` - value stored in `words.source` (default: `import`)
     * `--dry-run` - parse and report without writing to the database
+    * `--prune` - delete entries for this pair that the file no longer carries
+
+  ## Rebuilding a dictionary
+
+  The import upserts, so entries dropped from the file stay in the database and
+  keep competing for frontier slots. `--prune` clears them:
+
+      mix linguaswap.import_words priv/data/en-es.tsv --prune
+
+  Entries a user has progress on are never deleted — `user_words` cascades, so
+  pruning one would take that user's history with it. Those are reported for a
+  human to resolve.
   """
 
   use Mix.Task
@@ -40,7 +52,12 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
   def run(args) do
     {opts, paths} =
       OptionParser.parse!(args,
-        strict: [language_pair: :string, source: :string, dry_run: :boolean]
+        strict: [
+          language_pair: :string,
+          source: :string,
+          dry_run: :boolean,
+          prune: :boolean
+        ]
       )
 
     path =
@@ -73,6 +90,8 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
         Mix.shell().error("#{length(failed)} entries failed:")
         Enum.each(failed, fn {word, message} -> Mix.shell().error("  #{word}: #{message}") end)
       end
+
+      if opts[:prune], do: prune(language_pair, rows)
     end
   end
 
@@ -142,6 +161,27 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
           {ok, failed ++ [{attrs.original_word, describe_errors(changeset)}]}
       end
     end)
+  end
+
+  defp prune(language_pair, rows) do
+    keep = Enum.map(rows, & &1.original_word)
+    %{deleted: deleted, retained: retained} = Vocabulary.prune_words(language_pair, keep)
+
+    Mix.shell().info("Pruned #{deleted} #{language_pair} entries no longer in the file")
+
+    unless retained == [] do
+      Mix.shell().error(
+        "#{length(retained)} stale #{language_pair} entries kept because users have " <>
+          "progress on them — resolve by hand:"
+      )
+
+      Enum.each(retained, fn word ->
+        Mix.shell().error(
+          "  #{word.original_word} -> #{word.target_translation} " <>
+            "(id #{word.id}, rank #{inspect(word.frequency_rank)})"
+        )
+      end)
+    end
   end
 
   defp describe_errors(changeset) do
