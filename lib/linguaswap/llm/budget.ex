@@ -19,9 +19,16 @@ defmodule Linguaswap.LLM.Budget do
       error, not a wait: no amount of waiting brings the money back.
 
   Cost is computed from the usage the API reports, priced per model from
-  `:prices` (dollars per million tokens, `{input, output}`). A model with no
-  price entry is billed at zero, which keeps a new model from silently
-  spending the cap on the strength of a guess about its price.
+  `:prices` (dollars per million tokens, `{input, output}`).
+
+  An **unpriced model is billed at the most expensive rate known**, and warned
+  about. That is the opposite of the obvious choice, and it is deliberate: this
+  process is a safety net, and the first version billed unknown models at zero
+  "rather than guessing". A server-side refusal fallback then answered a real
+  run on a model that was not in the table, and the run recorded a spend of
+  exactly $0.00 — the cap silently stopped existing. Over-charging a model
+  nobody has priced yet ends a run early, which is recoverable; under-charging
+  it removes the only thing standing between a loop and a bill.
   """
 
   use GenServer
@@ -34,8 +41,14 @@ defmodule Linguaswap.LLM.Budget do
   @default_cost_cap_usd 5.0
 
   # Dollars per million tokens, {input, output}. Anthropic list prices.
+  #
+  # Fallback models belong here too: a refusal fallback can put a model on the
+  # bill that no configuration ever named, and an unpriced model distorts the
+  # cap (see the moduledoc).
   @default_prices %{
     "claude-opus-5" => {5.0, 25.0},
+    "claude-opus-4-8" => {5.0, 25.0},
+    "claude-opus-4-7" => {5.0, 25.0},
     "claude-sonnet-5" => {2.0, 10.0},
     "claude-haiku-4-5" => {1.0, 5.0}
   }
@@ -86,7 +99,7 @@ defmodule Linguaswap.LLM.Budget do
   Price of a request in dollars, given a model and a usage map.
   """
   def cost(model, usage, prices \\ @default_prices) do
-    {input_price, output_price} = Map.get(prices, model, {0.0, 0.0})
+    {input_price, output_price} = price_for(model, prices)
 
     input = usage_tokens(usage, ["input_tokens", "cache_creation_input_tokens"])
     cached = usage_tokens(usage, ["cache_read_input_tokens"])
@@ -95,6 +108,29 @@ defmodule Linguaswap.LLM.Budget do
     # Cache reads are a tenth of the input price. Nothing here caches yet, so
     # this only matters the day something does.
     (input * input_price + cached * input_price * 0.1 + output * output_price) / 1_000_000
+  end
+
+  @doc """
+  The `{input, output}` price for a model, in dollars per million tokens.
+
+  An unknown model is charged at the highest rate in the table. See the
+  moduledoc for why that is the safe direction to be wrong in.
+  """
+  def price_for(model, prices \\ @default_prices) do
+    case Map.fetch(prices, model) do
+      {:ok, price} ->
+        price
+
+      :error ->
+        Logger.warning(
+          "No price configured for #{inspect(model)}; billing it at the highest known rate " <>
+            "so the cost cap still means something. Add it to :prices to fix the accounting."
+        )
+
+        Enum.max_by(Map.values(prices), fn {input, output} -> input + output end, fn ->
+          {0.0, 0.0}
+        end)
+    end
   end
 
   defp usage_tokens(usage, keys) when is_map(usage) do

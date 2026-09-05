@@ -65,7 +65,8 @@ open http://localhost:4000
 
 The dictionary ships with translations but no target-side inflections, so the
 Spanish side of a swap is the base form until this is run. It calls the Claude
-API and costs roughly **$1 for the whole 539-entry Spanish dictionary**.
+API. Measured cost: **$0.03 per 20 entries**, so about **$0.80 for the whole
+539-entry Spanish dictionary**.
 
 **1. Put your API key in `.env`** (gitignored; Compose reads it automatically):
 
@@ -79,11 +80,19 @@ Get a key from [console.anthropic.com](https://console.anthropic.com/settings/ke
 An `export ANTHROPIC_API_KEY=...` in your shell works too — Compose prefers the
 shell over `.env`.
 
-**2. Generate.** Start small to see what the output looks like before spending
-the rest:
+**2. Generate and review** at
+[localhost:4000/dictionary/review](http://localhost:4000/dictionary/review).
+Pick a language pair, choose how many entries, and the button tells you what it
+will cost before you press it. Progress is live, a run can be stopped after the
+batch it is in, and what it actually cost is reported when it finishes. Nothing
+generated is put on a page until you approve it in the queue below.
+
+A run belongs to the server rather than to the page: closing the tab does not
+abandon it, and re-opening rejoins the run in progress.
+
+**Or from the command line**, which does the same thing after an import:
 
 ```bash
-# The 40 most frequent entries, two requests, a fraction of a cent.
 docker compose exec app mix linguaswap.import_words \
   priv/data/en-es.tsv --generate --generate-limit 40
 ```
@@ -91,25 +100,25 @@ docker compose exec app mix linguaswap.import_words \
 Dev logs every SQL statement, so pipe it if you want to read the result:
 `... 2>&1 | grep -vE '^(SELECT|INSERT|UPDATE|begin|commit)|QUERY'`.
 
-**3. Review** at [localhost:4000/dictionary/review](http://localhost:4000/dictionary/review)
-— nothing generated is put on a page until you approve it. Then run again
-without `--generate-limit` for the rest.
-
 Notes:
 
 - **Re-running the importer is safe.** It upserts, and it does not touch `pos`,
   `forms` or the review status, so a re-import never undoes a generation run.
 - **An entry is only ever generated once.** Rows already generated for are
   skipped, so a second run picks up where the first stopped.
-- **The run is bounded twice**: `--generate-limit`, and a $5 total cost cap
-  (`LINGUASWAP_LLM_COST_CAP_USD`) that stops it when spent. It works in
-  frequency order, so a run cut short has still done the most useful words.
-- **A wrong key stops the run on the first request**, rather than failing once
-  per batch.
+- **Only one run at a time.** Two would race for the same entries and pay for
+  them twice.
+- **Every run is bounded twice**: by how many entries you asked for, and by a
+  $5 cost cap (`LINGUASWAP_LLM_COST_CAP_USD`) that stops it when spent. It works
+  in frequency order, so a run cut short has still done the most useful words.
+- **A wrong key stops the run on the first request**, and so does a first batch
+  that produces nothing — rather than failing once per batch for the whole
+  dictionary.
 
-To use a different model or vendor, see `Linguaswap.LLM.Provider` — the default
-is Claude Opus 5 at `effort: :low`, and any OpenAI-compatible endpoint (including
-a local Ollama) is a config change.
+The default model is **Claude Opus 4.8**, not Opus 5: Opus 5's safety
+classifiers decline this workload outright (see `config/config.exs`). To use a
+different model or vendor, see `Linguaswap.LLM.Provider` — any OpenAI-compatible
+endpoint, including a local Ollama, is a config change.
 
 Then load the extension: open `chrome://extensions`, turn on **Developer mode**,
 choose **Load unpacked**, and pick the `chrome-extension/` directory. Register an
@@ -157,8 +166,8 @@ docker compose exec app iex -S mix phx.server
   OpenRouter, a local Ollama), chosen by one config key.
   `Linguaswap.LLM.Budget` caps what a run may spend and paces its requests;
   `Linguaswap.Dictionary` owns generation and the approve/reject workflow.
-  Generating the whole 637-entry dictionary costs about **$1** on Claude Opus 5
-  at `effort: :low`, and under $0.20 on a small model — see ROADMAP.md
+  A dashboard page at `/dictionary/review` drives generation and review together.
+  Measured cost: $0.03 per 20 entries on Claude Opus 4.8 — see ROADMAP.md
 
 ## Learn more
 

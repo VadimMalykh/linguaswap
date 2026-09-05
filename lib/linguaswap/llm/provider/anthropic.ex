@@ -12,12 +12,18 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
       schema, so the importer parses rather than scrapes. Without it a model
       that decides to be helpful and add a sentence of explanation breaks the
       run.
-    * **Effort is the cost dial.** Thinking is on by default on Claude Opus 5
-      and thinking tokens bill as output, which makes them the largest single
-      line in a generation run. `effort: :low` is the setting for bulk
-      lexicography — the work is recall, not reasoning — and it is what the
-      default config uses. Set it to `nil` to leave the model at its own
-      default.
+    * **Refusal fallbacks are opt-in.** A safety classifier can decline a
+      request as an ordinary 200 with `stop_reason: "refusal"` — which this
+      pipeline met for real, on a batch of words like "you" and "the".
+      `fallbacks: true` asks the API to re-run a declined request on another
+      model inside the same call. It is off by default for two reasons: only
+      some models accept the parameter at all (`claude-opus-4-8` returns a 400
+      for it), and a rescue silently changes which model produced your data.
+      The better answer to a model that refuses is a model that does not, which
+      is why the configured default is Opus 4.8 rather than Opus 5.
+    * **Effort is left to the model.** It is the obvious cost dial, and `:low`
+      measurably broke this workload — malformed JSON and dropped entries. Pass
+      `effort:` explicitly if you want it; unset means the model's default.
     * **No streaming.** Batches are small and nobody is watching the output, so
       the simpler non-streaming shape is right; `max_tokens` stays well inside
       the request timeout for the same reason.
@@ -27,8 +33,7 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
       config :linguaswap, Linguaswap.LLM,
         provider: Linguaswap.LLM.Provider.Anthropic,
         api_key: System.get_env("ANTHROPIC_API_KEY"),
-        model: "claude-opus-5",
-        effort: :low
+        model: "claude-opus-5"
   """
 
   @behaviour Linguaswap.LLM.Provider
@@ -37,6 +42,10 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
 
   @endpoint "https://api.anthropic.com/v1/messages"
   @api_version "2023-06-01"
+
+  # Server-side refusal fallbacks. The scalar `"default"` form routes by refusal
+  # category, so there is no model list here to keep current.
+  @fallback_beta "server-side-fallback-2026-07-01"
 
   @default_model "claude-opus-5"
   @default_max_tokens 8_000
@@ -55,6 +64,7 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
         }
         |> put_system(config[:system])
         |> put_effort(config[:effort])
+        |> put_fallbacks(config[:fallbacks])
 
       request(api_key, body, model, config)
     end
@@ -69,6 +79,9 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
     update_in(body, [:output_config], &Map.put(&1, :effort, to_string(effort)))
   end
 
+  defp put_fallbacks(body, true), do: Map.put(body, :fallbacks, "default")
+  defp put_fallbacks(body, _off), do: body
+
   defp api_key(config) do
     case config[:api_key] do
       key when is_binary(key) and key != "" -> {:ok, key}
@@ -79,7 +92,7 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
   defp request(api_key, body, model, config) do
     opts =
       [
-        headers: [{"x-api-key", api_key}, {"anthropic-version", @api_version}],
+        headers: headers(api_key, config),
         json: body,
         receive_timeout: config[:receive_timeout] || 120_000,
         # A 429 or a 5xx is worth another try; a 400 is a bug in the request and
@@ -96,6 +109,14 @@ defmodule Linguaswap.LLM.Provider.Anthropic do
       {:ok, %{status: status, body: body}} -> {:error, {:status, status, body}}
       {:error, exception} -> {:error, exception}
     end
+  end
+
+  defp headers(api_key, config) do
+    base = [{"x-api-key", api_key}, {"anthropic-version", @api_version}]
+
+    if config[:fallbacks] == true,
+      do: [{"anthropic-beta", @fallback_beta} | base],
+      else: base
   end
 
   # A refusal is an ordinary 200, so `stop_reason` is checked before the content

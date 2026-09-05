@@ -15,6 +15,9 @@ defmodule Linguaswap.Application do
       # The spending guard in front of the Claude API. Started with the app so
       # a `mix` task and a dashboard-triggered generation share one allowance.
       Linguaswap.LLM.Budget,
+      # Owns the dictionary generation started from the dashboard, so a run
+      # survives the page that started it.
+      Linguaswap.Dictionary.Run,
       # Start to serve requests, typically the last entry
       LinguaswapWeb.Endpoint
     ]

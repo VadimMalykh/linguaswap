@@ -70,10 +70,25 @@ defmodule Linguaswap.LLM do
     with :ok <- await_slot(budget, @max_wait_ms),
          {:ok, %{data: data, model: model, usage: usage}} <-
            provider.complete(prompt, schema, config) do
+      warn_if_substituted(config[:model], model)
       Budget.record(budget, model, usage)
       {:ok, data}
     end
   end
+
+  # A server-side refusal fallback answers on a different model without saying
+  # so anywhere the caller would notice. That matters twice over: the data was
+  # produced by a model nobody chose, and it is billed at that model's rate. So
+  # it is said out loud.
+  defp warn_if_substituted(requested, answered)
+       when is_binary(requested) and is_binary(answered) and requested != answered do
+    Logger.warning(
+      "#{requested} declined or could not answer; #{answered} responded instead. " <>
+        "The data this produced came from #{answered}."
+    )
+  end
+
+  defp warn_if_substituted(_requested, _answered), do: :ok
 
   @doc """
   Whether the client is configured to reach a model at all.

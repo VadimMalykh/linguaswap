@@ -157,6 +157,13 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
   defp describe_failure(:missing_api_key), do: "ANTHROPIC_API_KEY is not set"
   defp describe_failure(:cost_cap_reached), do: "the run reached its cost cap"
   defp describe_failure(:not_returned), do: "the model did not return this entry"
+
+  defp describe_failure(:first_batch_failed),
+    do: "nothing in the first batch generated, so the rest was not attempted"
+
+  defp describe_failure({:refusal, category}),
+    do: "the model declined the request (#{category})"
+
   defp describe_failure(reason), do: inspect(reason)
 
   @doc """

@@ -32,7 +32,7 @@ defmodule LinguaswapWeb.DictionaryReviewLiveTest do
 
       {:ok, _view, html} = live(conn, ~p"/dictionary/review")
 
-      assert html =~ "Review Generated Forms"
+      assert html =~ "Dictionary"
       assert html =~ "run"
       assert html =~ "correr"
       assert html =~ "corrió"
@@ -90,6 +90,166 @@ defmodule LinguaswapWeb.DictionaryReviewLiveTest do
       assert html =~ "en-uz"
       assert html =~ "Nothing is waiting for review"
     end
+  end
+
+  describe "the generation panel" do
+    # The panel only offers to spend money when there is a key to spend it
+    # with, so these tests supply one. Nothing here reaches the network: no run
+    # is ever started.
+    setup do
+      previous = Application.get_env(:linguaswap, Linguaswap.LLM, [])
+
+      Application.put_env(
+        :linguaswap,
+        Linguaswap.LLM,
+        Keyword.put(previous, :api_key, "test-key")
+      )
+
+      on_exit(fn -> Application.put_env(:linguaswap, Linguaswap.LLM, previous) end)
+    end
+
+    test "offers to generate what is left, with an estimate", %{conn: conn} do
+      for rank <- 1..30,
+          do:
+            Vocabulary.create_word(%{
+              original_word: "w#{rank}",
+              target_translation: "x#{rank}",
+              language_pair: "en-es",
+              frequency_rank: rank
+            })
+
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      assert html =~ "Generate 20"
+      # The button that spends money says roughly what it will spend.
+      assert html =~ "about $0.03"
+      assert html =~ "30 left to do"
+    end
+
+    test "never offers more than there is to do", %{conn: conn} do
+      pending_word(%{original_word: "walk", target_translation: "caminar", review_status: nil})
+
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      # One ungenerated entry, so the default choice of 20 is clamped.
+      assert html =~ "Generate 1"
+    end
+
+    test "says so when nothing is left to generate", %{conn: conn} do
+      pending_word()
+
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      assert html =~ "has been generated"
+    end
+
+    test "says so when there is no API key, rather than offering a dead button", %{conn: conn} do
+      Application.put_env(:linguaswap, Linguaswap.LLM, api_key: nil)
+      pending_word(%{original_word: "walk", target_translation: "caminar", review_status: nil})
+
+      {:ok, view, html} = live(conn, ~p"/dictionary/review")
+
+      assert html =~ "No API key is configured"
+      refute has_element?(view, "button", "Generate 1")
+    end
+
+    test "the button actually starts a run", %{conn: conn} do
+      # This is the test that was missing when `Run.start/3`'s two default
+      # arguments made the button crash: everything below it was covered, and
+      # the click itself was not.
+      word =
+        pending_word(%{original_word: "walk", target_translation: "caminar", review_status: nil})
+
+      Application.put_env(:linguaswap, Linguaswap.LLM,
+        api_key: "k",
+        model: "claude-opus-4-8",
+        plug: fn conn ->
+          entry = %{
+            "original_word" => "walk",
+            "lemma" => "walk",
+            "pos" => "verb",
+            "translation" => "caminar",
+            "forms" => [%{"feature" => "past", "value" => "caminó"}]
+          }
+
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.send_resp(
+            200,
+            Jason.encode!(%{
+              "model" => "claude-opus-4-8",
+              "content" => [
+                %{"type" => "text", "text" => Jason.encode!(%{"entries" => [entry]})}
+              ],
+              "stop_reason" => "end_turn",
+              "usage" => %{"input_tokens" => 10, "output_tokens" => 10}
+            })
+          )
+        end
+      )
+
+      {:ok, view, _html} = live(conn, ~p"/dictionary/review")
+      view |> element("button", "Generate 1") |> render_click()
+
+      # The run is a separate process, so give it a moment to finish.
+      Process.sleep(300)
+
+      assert Linguaswap.Repo.reload(word).forms == %{"past" => "caminó"}
+    end
+
+    test "shows a run started anywhere, not just from this page", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/dictionary/review")
+
+      # A run belongs to the server: another viewer's run, or one still going
+      # from before this page was opened, shows up here too.
+      send(view.pid, {:dictionary_run, running_status()})
+
+      html = render(view)
+      assert html =~ "Generating en-es — 40 of 100"
+      assert html =~ "Stop after this batch"
+    end
+
+    test "reports what the last run cost and what it could not do", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/dictionary/review")
+
+      send(view.pid, {:dictionary_run, finished_status()})
+
+      html = render(view)
+      assert html =~ "generated 38 en-es entries"
+      assert html =~ "$0.19"
+      assert html =~ "2 could not be generated"
+      assert html =~ "stopped at the cost cap"
+    end
+  end
+
+  defp running_status do
+    %{
+      status: :running,
+      running?: true,
+      language_pair: "en-es",
+      total: 100,
+      done: 40,
+      generated: 40,
+      failed: [],
+      stopped: nil,
+      started_at: DateTime.utc_now(),
+      finished_at: nil,
+      spent_usd: 0.0
+    }
+  end
+
+  defp finished_status do
+    %{
+      running_status()
+      | status: :finished,
+        running?: false,
+        done: 40,
+        generated: 38,
+        failed: [{"a", :not_returned}, {"b", :not_returned}],
+        stopped: :cost_cap_reached,
+        finished_at: DateTime.utc_now(),
+        spent_usd: 0.1875
+    }
   end
 
   test "the dashboard links to the queue with its size", %{conn: conn} do

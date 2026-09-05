@@ -33,7 +33,7 @@ config :linguaswap, LinguaswapWeb.Endpoint,
 if config_env() != :test do
   config :linguaswap, Linguaswap.LLM,
     api_key: System.get_env("ANTHROPIC_API_KEY"),
-    model: System.get_env("ANTHROPIC_MODEL", "claude-opus-5")
+    model: System.get_env("ANTHROPIC_MODEL", "claude-opus-4-8")
 
   case Float.parse(System.get_env("LINGUASWAP_LLM_COST_CAP_USD", "")) do
     {cap, _} -> config :linguaswap, Linguaswap.LLM, cost_cap_usd: cap

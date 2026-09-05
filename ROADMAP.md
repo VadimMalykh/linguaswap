@@ -69,7 +69,7 @@ Ordered by how much it limits real use.
 
 | Gap | Why it matters | Addressed by |
 | --- | --- | --- |
-| **No forms are generated yet** | Phase 4 built the pipeline and nothing has been run through it: every `words.forms` in the repository database is still empty, so the inflected output above is what the code does, not what a user sees today. Running `--generate` for en-es is a one-command job that costs money and needs reviewing. | A generation run |
+| **Most of the dictionary is still ungenerated** | 60 of 539 en-es entries have forms; the rest, and all of en-uz, do not. Finishing en-es is one button and about $0.70, plus the reviewing. | A generation run |
 | **No LLM at page-load time** | Sentence-level swap, cache misses and novel inflections all need a runtime call; today the client only reads precomputed data. | Phase 5 |
 | **Phrase ranks are hand-placed** | The corpus list is unigrams, so it cannot say where "of course" belongs among single words. The 45 phrase ranks in `en-es.tsv` are estimates. | A bigram frequency source |
 | **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. Phase 4 can now generate it, and the review queue is where a speaker would check it — but the reviewer is still the missing piece, not the pipeline. | A native reviewer |
@@ -559,7 +559,8 @@ something other than the dictionary form.
 | Rate limit and cost cap in front of every call | `lib/linguaswap/llm/budget.ex` |
 | Generation, prompts, and the approve/reject workflow | `lib/linguaswap/dictionary.ex` |
 | `--generate` / `--generate-limit` | `lib/mix/tasks/linguaswap.import_words.ex` |
-| Review queue at `/dictionary/review` | `lib/linguaswap_web/live/dictionary_review_live.ex` |
+| Generate + review page at `/dictionary/review` | `lib/linguaswap_web/live/dictionary_review_live.ex` |
+| One server-owned run at a time, with progress and cancel | `lib/linguaswap/dictionary/run.ex` |
 | `review_status`, form-shape and POS validation, `servable_forms/1` | `lib/linguaswap/vocabulary/word.ex` |
 | `pos` and `forms` served to the client | `lib/linguaswap_web/api_controller.ex` |
 | Feature-reporting `analyze/1`, `formKeysFor/2`, `selectForm/2` | `chrome-extension/lemmatizer.js` |
@@ -620,27 +621,20 @@ system prompt, entry list and schema (~850 input tokens), and comes back as
 ~130 characters per entry (~850 output tokens for the batch). The whole
 dictionary — 539 en-es plus 98 en-uz — is 32 requests.
 
-| Model | Full run | Halved by the Batch API |
-| --- | --- | --- |
-| Claude Opus 5, `effort: :low` (the default) | ~$1.15 | ~$0.57 |
-| Claude Opus 5, default effort | ~$2.80 | ~$1.40 |
-| Claude Sonnet 5, `effort: :low` | ~$0.45 | ~$0.23 |
-| Claude Haiku 4.5 | ~$0.16 | ~$0.08 |
-| A small non-Anthropic model | ~$0.02–0.17 | half that |
+The estimate before any of this ran was ~$2.80 for the full dictionary on an
+Opus-tier model. **Measured, it is $0.03 per 20 entries** — about $0.95 for all
+637 — because the estimate assumed far more thinking than the work actually
+provokes. The $5 default cap is therefore five full runs of headroom, not a
+tight constraint, and **model choice here is a quality decision rather than a
+cost one**: the whole spread between the best and cheapest option is under a
+dollar, spent once, on data a human then reviews entry by entry.
 
-So the entire dictionary costs about a dollar at the top of the range, and the
-$5 default cap is three re-runs of headroom rather than a tight constraint.
-Two things follow:
-
-1. **Model choice here is a quality decision, not a cost one.** The gap between
-   the best and cheapest option is under $1.20 for the whole dictionary, spent
-   once. Picking a weaker model to save it, on data a human then has to review
-   entry by entry, trades an hour of review time for a dollar.
-2. **`effort` matters more than the model.** Thinking tokens bill as output and
-   are the largest line in the run — the difference between low and default
-   effort on Opus 5 is larger than the difference between Opus 5 and Sonnet 5.
-   Filling in dictionary forms is recall, not reasoning, so the config runs it
-   at `:low`.
+The one cost lever that looked obviously right and was not: **`effort: :low`**.
+Thinking tokens bill as output and dominate the run, so lowering effort is the
+textbook saving — and it broke the workload outright, returning 1 entry of 5
+with a translation field of `"tú','forms'':{}"`. It saved about a dollar sixty
+across the dictionary and cost a whole run to discover. Effort is now left
+unset.
 
 The cost conversation that actually matters belongs to Phase 5. A runtime
 sentence-translation path is per page view and per user rather than once per
@@ -667,6 +661,77 @@ kept them.
 Two failures stop a run outright rather than repeating once per batch: a missing
 API key and an exhausted cap. Everything else — a bad batch, an entry the model
 left out — is recorded against the entries it affected and the run continues.
+
+### What actually went wrong, and what it changed
+
+Nothing in this phase survived contact with the real API unchanged. In order:
+
+1. **Opus 5 refuses this workload.** Ten refusals out of ten with fallbacks
+   off, `stop_reason: "refusal"`, category `cyber`, on batches of words like
+   "you", "the" and "a". The first theory was the prompt, which described "a
+   browser extension that replaces words on a web page" — plausibly readable as
+   page-injection tooling. Rewriting it produced one clean run and looked like
+   the fix; with more samples the rewrite made no measurable difference. The
+   prompt is still rewritten, because the old framing was a liability worth
+   removing, but **it was not the cause**, and an n=1 experiment was not enough
+   to say so. The configured model is now `claude-opus-4-8`, which is the same
+   tier, the same price, and does not refuse.
+
+2. **A refusal fallback hid it.** `fallbacks: "default"` rescued the declined
+   requests on `claude-opus-4-8` without saying so, and because that model was
+   not in the price table, a real run recorded a spend of **exactly $0.00** —
+   the cost cap had silently stopped existing. Unpriced models are now billed
+   at the highest known rate and warned about, a model substitution is logged,
+   and fallbacks are opt-in rather than on (Opus 4.8 rejects the parameter
+   outright with a 400).
+
+3. **The `forms` schema was corrupting data.** An object with seven optional
+   keys is the obvious shape and the wrong one: every model tried on it
+   eventually emitted `'` instead of `"`, collapsing the object into a single
+   string — `"third_person": "se rinde','past':'se rindió','gerund':'..."`.
+   Valid JSON, entirely wrong, and it would have passed review as a plausible
+   `third_person`. As a list of `{feature, value}` records the same models
+   returned the same data with no corruption and with the verb forms actually
+   filled in.
+
+4. **Models drop entries.** A request for twenty comes back with sixteen, or
+   with two, and which ones vary run to run — on every model tried. Rather than
+   shop for one that drops fewer, the missing entries are asked for again in a
+   smaller batch. Reliability by retry, not by model choice.
+
+5. **Two default arguments on `Run.start/3`.** `start(server \\ M, pair, opts
+   \\ [])` compiles, and then `start("en-es", limit: 20)` binds the language
+   pair as the server and crashes in `GenServer.whereis/1`. Everything around
+   the button was tested; the click itself was not, because the test
+   environment has no API key and the button is hidden without one. There is
+   now a test that clicks it against a stubbed API.
+
+The through-line: every one of these produced *plausible* output. A refusal
+looks like an empty answer, a fallback looks like a success, corrupted forms
+look like data, a short batch looks like a complete one, and a $0.00 bill looks
+like a cheap run. That is what the review queue is for, and it is why the
+failure paths are noisier than the success path.
+
+### The generation UI
+
+Generation began as a `mix` flag, which is a reasonable way to do a thing once
+and a poor way to do it repeatedly — adding a language, extending a word list,
+re-running after a prompt change are all ordinary operations. `/dictionary/review`
+now does both halves of the loop: choose a pair, choose how many, see the cost
+before pressing the button, watch progress, stop after the current batch, then
+read and approve what came back.
+
+`Linguaswap.Dictionary.Run` owns it, for three reasons the LiveView could not
+provide on its own. The run **outlives the page**, so closing the tab does not
+abandon work that is spending money and re-opening rejoins it. **Only one runs
+at a time**, because two would race for the same unqueued entries and pay for
+them twice. And each run gets **its own budget** — the global one is scoped to
+the process lifetime, which is right for a `mix` task and wrong for a server
+that runs for months, where a lifetime cap means generation quietly stops
+working forever once the app has spent it.
+
+The estimate on the button is measured rather than assumed, and the figure
+reported when a run finishes is what the budget actually recorded.
 
 ### The provider seam
 
@@ -706,16 +771,28 @@ the new one is a review pass over the queue, which is what the queue is for.
 The pipeline is covered end to end against a stubbed API (`Req`'s `:plug`
 answers in-process, so the suite needs neither a key nor a connection): the
 request shape and structured-output schema, refusals, non-JSON replies, cost
-accounting, the cap, form sanitising by POS, the review transitions, and the
-queue in the LiveView. On the client, `analyze()` reports the right feature for
-every suffix rule and every irregular, and a test asserts the two irregular
-tables cannot drift apart.
+accounting, the cap, form sanitising by POS, the retry for dropped entries, the
+review transitions, and the generate-and-review page including the button
+click. On the client, `analyze()` reports the right feature for every suffix
+rule and every irregular, and a test asserts the two irregular tables cannot
+drift apart.
 
-What is **not** verified is generation against the real API: no run has been
-made, so every `words.forms` in the repository database is still empty and the
-inflected output above is what the code does rather than what a user sees today.
-That is a `--generate` away, and it costs money, which is why it is a decision
-rather than a step.
+It has also been run for real, from the dashboard, against the live API: 60
+en-es entries generated at a measured $0.03 per twenty. A sample of what came
+back —
+
+| entry | pos | translation | forms |
+| --- | --- | --- | --- |
+| be | verb | ser | es / era / sido / siendo |
+| have | verb | tener | tiene / tenía / tenido / teniendo |
+| go | verb | ir | va / fue / ido / yendo |
+| give up | verb | rendirse | se rinde / se rindió / rendido / rindiéndose |
+
+which is the phase working: "she was running" can now come out as "she era
+corriendo" rather than "she ser correr", and a phrase inflects as a unit.
+
+The remaining ~478 en-es entries and all 98 en-uz ones are still ungenerated,
+and en-uz still wants a reviewer who reads Uzbek before anyone generates it.
 
 ## Picking up Phase 5
 

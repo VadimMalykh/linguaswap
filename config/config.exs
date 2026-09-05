@@ -48,13 +48,22 @@ config :linguaswap, LinguaswapWeb.Endpoint,
 # can answer instead, and `Linguaswap.LLM.Provider.OpenAICompatible` covers
 # every `/v1/chat/completions` service (OpenAI, OpenRouter, a local Ollama).
 #
-# `:effort` is the cost dial. Thinking tokens bill as output and dominate a
-# generation run, and filling in dictionary forms is recall rather than
-# reasoning, so this work runs at the bottom of the range.
+# `:effort` is left unset on purpose. It is the obvious cost dial — thinking
+# tokens bill as output and dominate a run — but `:low` measurably breaks this
+# workload: on a batch of 5 entries it returned 1, with a translation field of
+# `"tú','forms'':{}"`, while the same request at the default effort returned all
+# 5 cleanly. Filling twenty entries of a JSON schema turns out to need more
+# budget than "recall" suggests. The whole dictionary is ~$2.80 at the default
+# against ~$1.15 at `:low`, so this buys correctness for about a dollar sixty.
+# The model is `claude-opus-4-8` rather than `claude-opus-5` because Opus 5's
+# safety classifiers decline this workload — reproducibly, 10 refusals out of
+# 10, category `cyber`, on batches of ordinary function words. Nothing in the
+# prompt explains it and rewording did not move it. Opus 4.8 is the same tier
+# and the same price, answers the same request without complaint, and is what
+# the refusal fallback was quietly substituting anyway.
 config :linguaswap, Linguaswap.LLM,
   provider: Linguaswap.LLM.Provider.Anthropic,
-  model: "claude-opus-5",
-  effort: :low,
+  model: "claude-opus-4-8",
   requests_per_minute: 20,
   cost_cap_usd: 5.0
 

@@ -153,8 +153,15 @@ defmodule Linguaswap.LLMTest do
 
       assert_in_delta Budget.cost("claude-opus-5", usage), 30.0, 0.001
       assert_in_delta Budget.cost("claude-haiku-4-5", usage), 6.0, 0.001
-      # A model with no price is charged nothing rather than a guess.
-      assert Budget.cost("some-new-model", usage) == 0.0
+    end
+
+    test "charges an unknown model the highest rate it knows" do
+      usage = %{"input_tokens" => 1_000_000, "output_tokens" => 1_000_000}
+
+      # A refusal fallback answered a real run on a model that was not in the
+      # table, and billing the unknown at zero made the cap silently stop
+      # existing. Over-charging ends a run early; under-charging ends a wallet.
+      assert_in_delta Budget.cost("some-new-model", usage), 30.0, 0.001
     end
 
     test "treats a malformed usage report as free rather than raising" do
@@ -197,9 +204,11 @@ defmodule Linguaswap.LLMTest do
 
       LLM.complete("hello", @schema, budget: budget)
 
-      # "stub-model" has no configured price, so it is billed at zero rather
-      # than at a guess — the run keeps going, the cap is just not moved.
-      assert %{spent_usd: +0.0, requests: 1} = Budget.stats(budget)
+      # "stub-model" is not in the price table, so it is charged at the highest
+      # known rate — a million input tokens at the Opus 5 input price. The cap
+      # keeps meaning something for a model nobody has priced.
+      assert %{spent_usd: spent, requests: 1} = Budget.stats(budget)
+      assert_in_delta spent, 5.0, 0.001
     end
 
     test "reports which provider is in force" do

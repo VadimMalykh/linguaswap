@@ -63,9 +63,12 @@ defmodule Linguaswap.DictionaryTest do
       "lemma" => "run",
       "pos" => "verb",
       "translation" => "correr",
-      "forms" => %{"past" => "corrió", "gerund" => "corriendo"}
+      "forms" => forms(%{"past" => "corrió", "gerund" => "corriendo"})
     })
   end
+
+  # The wire shape: a list of {feature, value} records.
+  defp forms(map), do: Enum.map(map, fn {k, v} -> %{"feature" => k, "value" => v} end)
 
   describe "generate/2" do
     test "fills in part of speech and forms, and queues them for review", %{budget: budget} do
@@ -107,6 +110,15 @@ defmodule Linguaswap.DictionaryTest do
       assert Vocabulary.get_word_by_original("run", "en-es").target_translation == "correr"
     end
 
+    test "still understands the older object shape for forms", %{budget: budget} do
+      word(%{original_word: "run", target_translation: "correr"})
+      stub_generation([generated(%{"forms" => %{"past" => "corrió"}})])
+
+      Dictionary.generate("en-es", budget: budget)
+
+      assert Vocabulary.get_word_by_original("run", "en-es").forms == %{"past" => "corrió"}
+    end
+
     test "drops forms that do not belong to the part of speech", %{budget: budget} do
       word(%{original_word: "wall", target_translation: "pared"})
 
@@ -116,7 +128,7 @@ defmodule Linguaswap.DictionaryTest do
           "pos" => "noun",
           "translation" => "pared",
           # A noun has no past tense, whatever the model offers.
-          "forms" => %{"plural" => "paredes", "past" => "paredó"}
+          "forms" => forms(%{"plural" => "paredes", "past" => "paredó"})
         })
       ])
 
@@ -133,7 +145,7 @@ defmodule Linguaswap.DictionaryTest do
           "original_word" => "the",
           "pos" => "determiner",
           "translation" => "el",
-          "forms" => %{}
+          "forms" => []
         })
       ])
 
@@ -153,6 +165,54 @@ defmodule Linguaswap.DictionaryTest do
                Dictionary.generate("en-es", budget: budget)
 
       assert Vocabulary.get_word_by_original("walk", "en-es").review_status == nil
+    end
+
+    test "goes back for the entries the model left out", %{budget: budget} do
+      word(%{original_word: "run", target_translation: "correr", frequency_rank: 1})
+      word(%{original_word: "walk", target_translation: "caminar", frequency_rank: 2})
+
+      # First request returns one of the two; the retry carries only the one
+      # that was missing, which is the behaviour being asserted.
+      previous = Application.get_env(:linguaswap, LLM, [])
+      {:ok, counter} = Agent.start_link(fn -> 0 end)
+
+      plug = fn conn ->
+        {:ok, body, conn} = Plug.Conn.read_body(conn)
+        n = Agent.get_and_update(counter, &{&1, &1 + 1})
+        prompt = body |> Jason.decode!() |> get_in(["messages", Access.at(0), "content"])
+        send(self(), {:asked_for, n, prompt})
+
+        entries =
+          if n == 0,
+            do: [generated(%{})],
+            else: [generated(%{"original_word" => "walk", "translation" => "caminar"})]
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.send_resp(
+          200,
+          Jason.encode!(%{
+            "content" => [%{"type" => "text", "text" => Jason.encode!(%{"entries" => entries})}],
+            "stop_reason" => "end_turn",
+            "usage" => %{"input_tokens" => 10, "output_tokens" => 5}
+          })
+        )
+      end
+
+      Application.put_env(:linguaswap, LLM, api_key: "k", model: "claude-opus-4-8", plug: plug)
+      on_exit(fn -> Application.put_env(:linguaswap, LLM, previous) end)
+
+      assert %{generated: 2, failed: []} = Dictionary.generate("en-es", budget: budget)
+
+      assert_received {:asked_for, 0, first}
+      assert first =~ "run"
+      assert first =~ "walk"
+
+      # The retry carries only what was missing, so it costs a fraction of the
+      # first attempt rather than repeating it.
+      assert_received {:asked_for, 1, second}
+      assert second =~ "walk"
+      refute second =~ "- run"
     end
 
     test "stops rather than repeating a failure that cannot improve", %{budget: budget} do
@@ -221,7 +281,7 @@ defmodule Linguaswap.DictionaryTest do
           "original_word" => "give up",
           "pos" => "verb",
           "translation" => "rendirse",
-          "forms" => %{"past" => "se rindió"}
+          "forms" => forms(%{"past" => "se rindió"})
         })
       ])
 
@@ -343,8 +403,13 @@ defmodule Linguaswap.DictionaryTest do
       assert item["required"] == ["original_word", "lemma", "pos", "translation", "forms"]
       assert item["properties"]["pos"]["enum"] == Word.parts_of_speech()
 
-      assert Map.keys(item["properties"]["forms"]["properties"]) |> Enum.sort() ==
-               Enum.sort(Word.form_keys())
+      # `forms` is a list of {feature, value} records, not an object with
+      # optional keys — see the schema's own docs for the corruption that
+      # shape caused.
+      forms = item["properties"]["forms"]
+      assert forms["type"] == "array"
+      assert forms["items"]["properties"]["feature"]["enum"] == Word.form_keys()
+      assert forms["items"]["required"] == ["feature", "value"]
     end
   end
 end
