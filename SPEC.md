@@ -21,10 +21,11 @@ in [DESIGN.md](DESIGN.md). Summary:
 - [x] Real exposure counting: the client reports the swaps it made, and
       `POST /api/v1/words/replace` takes them in a batch
 - [x] Configurable backend URL in the extension popup
-- [x] en-es dictionary rebuilt from a corpus frequency list (494 entries)
+- [x] en-es dictionary rebuilt from a corpus frequency list (539 entries)
+- [x] **Roadmap Phase 3** — phrase entries, n-gram tokenizer, per-sentence
+      density cap with priority ordering
 
 ### Next 📋
-- [ ] **Roadmap Phase 3** — phrase entries, n-gram tokenizer, density cap
 - [ ] **Roadmap Phase 4** — LLM pipeline for precomputed target inflections
 - [ ] **Roadmap Phase 5** — sentence-level swap
 
@@ -153,7 +154,10 @@ in [DESIGN.md](DESIGN.md). Summary:
 - email
 - password_hash
 - target_language (e.g., "es", "uz")
-- settings (JSONB)
+- settings (JSONB: "word_budget" — words in flight, default 50;
+            "swap_density" — share of a sentence the client may swap,
+            default 0.35. Both are set through PUT /api/v1/settings;
+            neither has a dashboard control yet.)
 - inserted_at
 - updated_at
 ```
@@ -168,7 +172,7 @@ in [DESIGN.md](DESIGN.md). Summary:
 - difficulty_score      (derived from the frequency band on import)
 - lemma                 (canonical English base form; lookup key from Phase 2)
 - pos                   (part of speech, optional)
-- token_count           (1 = word, >1 = phrase entry; Phase 3)
+- token_count           (1 = word, >1 = phrase entry)
 - forms                 (jsonb: target-side inflections; filled in Phase 4)
 - source                (seed / import / llm)
 - inserted_at

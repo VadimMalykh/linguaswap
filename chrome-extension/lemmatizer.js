@@ -87,6 +87,21 @@
   // damaging collisions live: "thing" -> "th" -> "the", "as" -> "a".
   const MIN_LENGTH = 3;
 
+  // Share of a sentence's words a caller may swap when it has no user setting
+  // to go by. Roughly a third: enough that a paragraph reads as bilingual,
+  // little enough that the English scaffolding holding it together survives.
+  const DEFAULT_MAX_DENSITY = 0.35;
+
+  // Order in which matches are given up when the density cap bites. A word the
+  // user is still learning earns its place in a crowded sentence ahead of one
+  // they are reviewing, which in turn earns it ahead of one they have already
+  // mastered and no longer learn anything from.
+  const STATUS_PRIORITY = { hard: 0, simple: 1, trivial: 2 };
+
+  // An entry the API sent without a status is treated as review-grade: not the
+  // first thing to drop, not the last.
+  const DEFAULT_STATUS_PRIORITY = 1;
+
   function isVowel(ch) {
     return "aeiou".includes(ch);
   }
@@ -241,49 +256,305 @@
     return /[.!?:;…][)"'”’\]]*$/.test(previous);
   }
 
-  // Walks a run of text and decides, token by token, what to swap. Returns
-  // neutral parts rather than strings or DOM nodes so the page walker and the
-  // title translator can share one set of rules: `text` parts are passed
-  // through untouched, `swap` parts carry the dictionary entry plus the
-  // punctuation and casing that must survive the replacement.
-  //
-  // `lookup` takes a candidate base form and returns the dictionary entry for
-  // it (anything with a `translation`), or null.
-  function segmentText(text, lookup) {
-    const parts = [];
-    let matched = false;
-    let previousSegment = null;
+  // Splits text into the units the passes below work on: whitespace runs, kept
+  // verbatim so the text round-trips, and word tokens already broken into the
+  // punctuation around them.
+  function tokenizeItems(text) {
+    const items = [];
 
-    for (const segment of String(text == null ? "" : text).split(/(\s+)/)) {
-      if (!segment) continue;
+    for (const raw of String(text == null ? "" : text).split(/(\s+)/)) {
+      if (!raw) continue;
 
-      if (/^\s+$/.test(segment)) {
-        parts.push({ type: "text", text: segment });
+      if (/^\s+$/.test(raw)) {
+        items.push({ raw, space: true });
         continue;
       }
 
-      const { prefix, core, suffix } = splitToken(segment);
-      const atSentenceStart = startsSentence(previousSegment);
-      previousSegment = segment;
+      const { prefix, core, suffix } = splitToken(raw);
+      items.push({ raw, space: false, prefix, core, suffix });
+    }
 
-      const entry = core && !isProperNoun(core, atSentenceStart) ? resolve(core, lookup) : null;
+    return items;
+  }
 
-      if (entry) {
-        matched = true;
-        parts.push({
-          type: "swap",
-          prefix,
-          core,
-          suffix,
-          entry,
-          display: applyCase(core, entry.translation),
-        });
+  // Groups word tokens into sentences and records which ones open a sentence.
+  // The density cap is per sentence, so every token needs to know which one it
+  // belongs to before anything is chosen.
+  function markSentences(words) {
+    let previousRaw = null;
+    let sentence = 0;
+
+    words.forEach((word, index) => {
+      word.atSentenceStart = startsSentence(previousRaw);
+      if (word.atSentenceStart && index > 0) sentence += 1;
+      word.sentence = sentence;
+      previousRaw = word.raw;
+    });
+  }
+
+  // Resolves a run of `length` word tokens starting at `start`, or null.
+  //
+  // A phrase entry has to match an uninterrupted run of words: punctuation
+  // between them ends it, so "a lot, of them" never reaches the "a lot of"
+  // entry. Any name in the run disqualifies the whole phrase, for the same
+  // reason a name disqualifies a single token.
+  function matchAt(words, start, length, lookup) {
+    const span = words.slice(start, start + length);
+
+    for (let k = 0; k < span.length; k++) {
+      const word = span[k];
+      if (!word.core) return null;
+      if (isProperNoun(word.core, word.atSentenceStart)) return null;
+      if (k > 0 && word.prefix) return null;
+      if (k < span.length - 1 && word.suffix) return null;
+    }
+
+    if (length === 1) return resolve(span[0].core, lookup);
+
+    return resolvePhrase(span.map((word) => word.core), lookup);
+  }
+
+  // English phrases inflect on their head, and the head is almost always the
+  // first word: "gave up", "looks after", "took care of". So only the first
+  // token is lemmatized and the rest are matched as they stand, which keeps the
+  // number of lookups per position small and bounded.
+  function resolvePhrase(cores, lookup) {
+    const tail = cores
+      .slice(1)
+      .map((core) => core.toLowerCase())
+      .join(" ");
+
+    for (const candidate of candidates(cores[0])) {
+      const entry = lookup(candidate + " " + tail);
+      if (entry) return entry;
+    }
+
+    return null;
+  }
+
+  // Longest match wins, left to right: at each position the longest phrase that
+  // resolves is taken and its tokens are consumed, so "a lot of" beats the "a"
+  // entry that starts at the same place.
+  function findMatches(words, lookup, maxPhraseTokens) {
+    const matches = [];
+    let index = 0;
+
+    while (index < words.length) {
+      const limit = Math.min(maxPhraseTokens, words.length - index);
+      let found = null;
+
+      for (let length = limit; length >= 1 && !found; length--) {
+        const entry = matchAt(words, index, length, lookup);
+        if (entry) found = { start: index, length, entry };
+      }
+
+      if (found) {
+        matches.push(found);
+        index += found.length;
       } else {
-        parts.push({ type: "text", text: segment });
+        index += 1;
       }
     }
 
+    return matches;
+  }
+
+  function priorityOf(entry) {
+    const rank = STATUS_PRIORITY[entry && entry.status];
+    return rank === undefined ? DEFAULT_STATUS_PRIORITY : rank;
+  }
+
+  // How far a candidate sits from the nearest swap already committed in its own
+  // sentence. A sentence nothing has been committed to yet scores infinite, so
+  // every sentence gets its first swap before any sentence gets a second.
+  function spacingScore(match, words, positions) {
+    const chosen = positions.get(words[match.start].sentence);
+    if (!chosen || chosen.length === 0) return Infinity;
+
+    let nearest = Infinity;
+    for (const position of chosen) nearest = Math.min(nearest, Math.abs(position - match.start));
+    return nearest;
+  }
+
+  // Drops matches until no sentence exceeds `maxDensity` of its own words, and
+  // spreads what survives across the sentence.
+  //
+  // This is the "decide, then commit" half of the tokenizer: matching above is
+  // positional and greedy, choosing among the matches is neither. Two rules, in
+  // that order.
+  //
+  // Priority first. A word the user is still learning is kept ahead of one they
+  // are reviewing, which is kept ahead of one they have already mastered, so
+  // what survives a crowded sentence is the part that still teaches them
+  // something.
+  //
+  // Spacing second. Within one priority the obvious tie-break is reading order,
+  // and it is the wrong one: it translates the front of a long sentence solid
+  // and leaves the back untouched, which moves the pidgin rather than removing
+  // it, and strips away the English context that makes a swapped word guessable
+  // — the whole reason for reading this way. So each pick goes to the candidate
+  // sitting farthest from anything already swapped in its sentence, which
+  // spaces the swaps out however many of them there are.
+  //
+  // A phrase spends its whole token count, because three English words becoming
+  // one Spanish phrase is three words of the sentence the reader no longer has.
+  function applyDensityCap(matches, words, maxDensity) {
+    if (maxDensity == null) return matches;
+    if (!(maxDensity > 0)) return [];
+
+    const totals = new Map();
+    for (const word of words) {
+      if (!word.core) continue;
+      totals.set(word.sentence, (totals.get(word.sentence) || 0) + 1);
+    }
+
+    const allowance = new Map();
+    for (const [sentence, total] of totals) {
+      // Never zero: a heading, a link or a list item is a whole "sentence" of
+      // one or two words, and rounding it down to no swaps would silence the
+      // short text that makes up most of a real page.
+      allowance.set(sentence, Math.max(1, Math.floor(total * maxDensity)));
+    }
+
+    const spent = new Map();
+    const positions = new Map();
+    const kept = new Set();
+
+    const ranked = matches
+      .map((match, index) => ({ match, index }))
+      .sort((a, b) => priorityOf(a.match.entry) - priorityOf(b.match.entry) || a.index - b.index);
+
+    // Equal priorities are adjacent after that sort, so a tier can be drained
+    // before the next one is looked at: spacing never reorders across priority.
+    let tierStart = 0;
+
+    while (tierStart < ranked.length) {
+      const tier = priorityOf(ranked[tierStart].match.entry);
+      let tierEnd = tierStart;
+      while (tierEnd < ranked.length && priorityOf(ranked[tierEnd].match.entry) === tier) tierEnd++;
+
+      const pending = ranked.slice(tierStart, tierEnd);
+      tierStart = tierEnd;
+
+      while (pending.length) {
+        let best = 0;
+        let bestScore = -1;
+
+        for (let k = 0; k < pending.length; k++) {
+          const score = spacingScore(pending[k].match, words, positions);
+          if (score > bestScore) {
+            bestScore = score;
+            best = k;
+          }
+        }
+
+        const { match, index } = pending.splice(best, 1)[0];
+        const sentence = words[match.start].sentence;
+        const used = spent.get(sentence) || 0;
+
+        if (used + match.length > (allowance.get(sentence) || 0)) continue;
+
+        spent.set(sentence, used + match.length);
+        if (!positions.has(sentence)) positions.set(sentence, []);
+        positions.get(sentence).push(match.start);
+        kept.add(index);
+      }
+    }
+
+    return matches.filter((_match, index) => kept.has(index));
+  }
+
+  // Turns the surviving matches back into the neutral `parts` contract, with
+  // every item not covered by a match passed through verbatim.
+  function buildParts(items, words, matches) {
+    const byItem = new Map();
+    for (const match of matches) byItem.set(words[match.start].itemIndex, match);
+
+    const parts = [];
+    let matched = false;
+    let index = 0;
+
+    while (index < items.length) {
+      const match = byItem.get(index);
+
+      if (!match) {
+        parts.push({ type: "text", text: items[index].raw });
+        index += 1;
+        continue;
+      }
+
+      const first = words[match.start];
+      const last = words[match.start + match.length - 1];
+
+      // The page's own spacing between the phrase's words is part of what a
+      // reveal has to put back, so the raw items are re-joined rather than
+      // rebuilt from the cores.
+      let joined = "";
+      for (let k = index; k <= last.itemIndex; k++) joined += items[k].raw;
+      const core = joined.slice(first.prefix.length, joined.length - last.suffix.length);
+
+      parts.push({
+        type: "swap",
+        prefix: first.prefix,
+        core,
+        suffix: last.suffix,
+        entry: match.entry,
+        tokens: match.length,
+        display: applyCase(first.core, match.entry.translation),
+      });
+
+      matched = true;
+      index = last.itemIndex + 1;
+    }
+
     return { parts, matched };
+  }
+
+  // Walks a run of text and decides what to swap. Returns neutral parts rather
+  // than strings or DOM nodes so the page walker and the title translator can
+  // share one set of rules: `text` parts are passed through untouched, `swap`
+  // parts carry the dictionary entry plus the punctuation and casing that must
+  // survive the replacement.
+  //
+  // `lookup` takes a candidate base form and returns the dictionary entry for
+  // it (anything with a `translation`), or null. Phrase entries are looked up
+  // by their words joined with single spaces, lowercased.
+  //
+  // Options:
+  //
+  //   * `maxPhraseTokens` — longest phrase entry the dictionary holds. Defaults
+  //     to 1, which makes the n-gram pass a no-op, so a caller that has not
+  //     been told about phrases behaves exactly as it did before them.
+  //   * `maxDensity` — the share of a sentence's words that may be swapped.
+  //     Defaults to no cap: how much of a page to translate is policy, and it
+  //     belongs to the caller that knows the user's settings, not to the
+  //     tokenizer. `DEFAULT_MAX_DENSITY` is exported for callers with no
+  //     setting to hand.
+  //
+  // A caveat that matters on real pages: the unit here is one run of text, and
+  // markup splits sentences. In `<p>Some <b>bold</b> text.</p>` the walker sees
+  // three runs, so the cap applies three times over. It bounds each fragment
+  // rather than the rendered sentence, which is conservative in the direction
+  // that matters — no fragment is ever swapped wholesale — but it is not exact.
+  function segmentText(text, lookup, options) {
+    const opts = options || {};
+    const maxPhraseTokens = Math.max(1, opts.maxPhraseTokens || 1);
+    const maxDensity = opts.maxDensity == null ? null : Number(opts.maxDensity);
+
+    const items = tokenizeItems(text);
+    const words = [];
+
+    items.forEach((item, itemIndex) => {
+      if (item.space) return;
+      item.itemIndex = itemIndex;
+      words.push(item);
+    });
+
+    markSentences(words);
+
+    const matches = findMatches(words, lookup, maxPhraseTokens);
+
+    return buildParts(items, words, applyDensityCap(matches, words, maxDensity));
   }
 
   function resolve(core, lookup) {
@@ -310,6 +581,7 @@
     startsSentence,
     segmentText,
     renderParts,
+    DEFAULT_MAX_DENSITY,
     IRREGULAR,
     BRANDS,
   };

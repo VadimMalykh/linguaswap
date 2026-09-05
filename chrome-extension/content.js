@@ -19,6 +19,13 @@
   let reportedEntries = new Set();
   let swapReportTimer = null;
 
+  // How the tokenizer is allowed to treat this page, resolved from what the API
+  // sent with the dictionary. `maxPhraseTokens` is the longest phrase entry the
+  // user actually has, so a dictionary of single words costs nothing to walk;
+  // `maxDensity` is the share of each sentence that may be swapped, which is a
+  // learning setting and therefore the server's to decide.
+  let swapOptions = { maxPhraseTokens: 1, maxDensity: null };
+
   // Long enough to let the second walk and the first mutation batch land, so a
   // page reports once rather than three times.
   const SWAP_REPORT_DELAY = 2500;
@@ -243,21 +250,31 @@
         // Two passes so a spelling always beats a lemma: several entries can
         // share a lemma, and the API sends them in frequency order.
         const entries = [];
+        let longestPhrase = 1;
+
         for (const w of response.words) {
           const entry = {
             translation: w.translation,
             status: w.status,
             original: w.original,
-            lemma: (w.lemma || w.original).toLowerCase(),
+            lemma: normalizeKey(w.lemma || w.original),
           };
           entries.push(entry);
 
-          const surface = w.original.toLowerCase();
+          // A phrase entry is keyed exactly as the tokenizer will ask for it:
+          // its words joined by single spaces, lowercased.
+          const surface = normalizeKey(w.original);
           if (!wordMap[surface]) wordMap[surface] = entry;
+          longestPhrase = Math.max(longestPhrase, phraseLength(w));
         }
         for (const entry of entries) {
           if (!wordMap[entry.lemma]) wordMap[entry.lemma] = entry;
         }
+
+        swapOptions = {
+          maxPhraseTokens: longestPhrase,
+          maxDensity: resolveDensity(response.swap),
+        };
 
         translateTitle();
         walkAndReplace(document.body);
@@ -276,6 +293,27 @@
     return wordMap[candidate] || null;
   }
 
+  // The dictionary is keyed on single-spaced lowercase text, so a phrase entry
+  // stored with odd spacing still answers the tokenizer's lookup.
+  function normalizeKey(word) {
+    return String(word || "").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  // `token_count` comes from the server, which derives it from the entry
+  // itself; splitting is the fallback for a server too old to send it.
+  function phraseLength(word) {
+    if (Number.isInteger(word.token_count) && word.token_count > 0) return word.token_count;
+    return normalizeKey(word.original).split(" ").length;
+  }
+
+  // A server that does not send a density still gets one: an uncapped page is
+  // the pidgin the cap exists to prevent, so the shared default stands in.
+  function resolveDensity(swap) {
+    const value = swap && Number(swap.max_density);
+    if (Number.isFinite(value) && value >= 0) return value;
+    return tokens.DEFAULT_MAX_DENSITY;
+  }
+
   function findTitle() {
     return (
       document.querySelector(
@@ -289,7 +327,7 @@
   function translateString(text) {
     if (!text) return null;
 
-    const { parts, matched } = tokens.segmentText(text, lookupCandidate);
+    const { parts, matched } = tokens.segmentText(text, lookupCandidate, swapOptions);
     if (!matched) return null;
 
     // A translated title is exposure like any other swap. The title watchers
@@ -563,7 +601,7 @@
     if (isInsideTitle(textNode)) return;
 
     const text = textNode.textContent;
-    const { parts, matched } = tokens.segmentText(text, lookupCandidate);
+    const { parts, matched } = tokens.segmentText(text, lookupCandidate, swapOptions);
 
     const fragments = [];
 

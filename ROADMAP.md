@@ -16,16 +16,16 @@ before 5 keeps the runtime client dumb and fast (Q4 "precompute-first").
 | 0 — Data foundations | Word metadata, frequency ranks, importer | ✅ done |
 | 1 — Adaptive word intake | Per-user active pool with a budget | ✅ done |
 | 2 — Lemmatization coverage | One entry matches every inflection | ✅ done |
-| 3 — Phrases and density control | Multi-word entries, swap-density cap | ⬜ next |
-| 4 — LLM precompute pipeline | Generated translations, POS, inflected forms | ⬜ planned |
+| 3 — Phrases and density control | Multi-word entries, swap-density cap | ✅ done |
+| 4 — LLM precompute pipeline | Generated translations, POS, inflected forms | ⬜ next |
 | 5 — Sentence-level swap | Whole-sentence translation above a threshold | ⬜ planned |
 | 6 — Harvest and ecosystem | Auto-harvest from real pages, Anki export | ⬜ planned |
 
 Both test suites pass:
 
 ```bash
-docker compose exec -e MIX_ENV=test app mix test              # 200 tests
-docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 23 tests
+docker compose exec -e MIX_ENV=test app mix test              # 211 tests
+docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 37 tests
 ```
 
 ## What works today
@@ -37,18 +37,24 @@ The app is usable end to end as a local, single-machine build:
 2. **The extension pulls your active pool** on every page load — up to your word
    budget (default 50) of `hard`/`simple` words in frequency order, plus every
    word you have already graduated.
-3. **Words are swapped in place on any page.** Page text is lemmatized in the
-   client, so one dictionary entry covers every inflection: `was`, `been` and
-   `being` all reach the `be` entry. Punctuation and capitalization survive the
+3. **Words and phrases are swapped in place on any page.** Page text is
+   lemmatized in the client, so one dictionary entry covers every inflection:
+   `was`, `been` and `being` all reach the `be` entry. Multi-word entries match
+   longest-first, so `a lot of` wins over the `a` that starts in the same place,
+   and `gave up` reaches `give up`. Punctuation and capitalization survive the
    swap; names, acronyms and stoplisted brands are left alone.
-4. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
+4. **No sentence goes past the density cap.** At most ~35% of a sentence's words
+   are swapped, spread across it rather than bunched at the front, and when the
+   cap forces a choice it keeps the words the user is still learning. This is
+   what stops a word-dense page from turning into pidgin.
+5. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
    one form settles every form of the same word on the page.
-5. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
+6. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
    promotes it to `trivial`, which frees budget and pulls the next frontier word
    into the pool automatically.
-6. **The dashboard** shows pool state (active / graduated / frontier), stats and
+7. **The dashboard** shows pool state (active / graduated / frontier), stats and
    page-visit history.
-7. **YouTube video titles** are translated too, through a separate path that
+8. **YouTube video titles** are translated too, through a separate path that
    copes with YouTube reusing the title node across navigations.
 
 ## What is not built yet
@@ -57,12 +63,12 @@ Ordered by how much it limits real use.
 
 | Gap | Why it matters | Addressed by |
 | --- | --- | --- |
-| **Single words only** | "a lot of" cannot be an entry; the tokenizer walks one whitespace segment at a time. | Phase 3 |
-| **No density cap** | A word-dense page can be swapped into pidgin. Nothing limits swaps per sentence. | Phase 3 |
-| **Base-form output only** | The target side is always the dictionary form: "she ser running", never "she era". | Phase 4 |
+| **Base-form output only** | The target side is always the dictionary form: "she ser running", never "she era". Phrases inherit it: "give up" is "rendirse", never "se rindió". | Phase 4 |
 | **No LLM anywhere** | Translations, POS and inflected forms are all hand-authored TSV. | Phase 4 |
-| **en-uz is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. | Phase 4, or a native reviewer |
-| **No UI for the word budget** | Settable only through `PUT /api/v1/settings` under `settings.word_budget`. | Unscheduled |
+| **Phrase ranks are hand-placed** | The corpus list is unigrams, so it cannot say where "of course" belongs among single words. The 45 phrase ranks in `en-es.tsv` are estimates. | A bigram frequency source |
+| **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. | Phase 4, or a native reviewer |
+| **The density cap is per text node, not per rendered sentence** | Markup splits sentences: `<p>Some <b>bold</b> text.</p>` is three runs, and the cap applies to each. It bounds every fragment, which errs toward swapping too little. | Unscheduled |
+| **No UI for the word budget or the density** | Settable only through `PUT /api/v1/settings` under `settings.word_budget` and `settings.swap_density`. | Unscheduled |
 
 ### Unscheduled work (no phase owns these)
 
@@ -82,11 +88,13 @@ Ordered by how much it limits real use.
 - [x] **Turn off the title tracer.** ~~`titleDebug` is `true`.~~ Done: one
       `DEBUG` constant at the top of `content.js` now gates the title trace and
       the load banner together.
-- [ ] **A budget control in the dashboard.**
+- [ ] **Budget and density controls in the dashboard.**
 - [ ] **DOM-level tests for the content script.** `lemmatizer.js` and
       `background.js` are covered; `content.js` — the walker, the mutation
-      observer, the title pipeline, and now the swap-report batching — is not,
-      and has no harness. Phase 3 lands squarely in that untested code.
+      observer, the title pipeline, the swap-report batching, and now the
+      dictionary build that decides `maxPhraseTokens` — is not, and has no
+      harness. Phase 3 kept the decisions in the pure module for exactly this
+      reason, but the wiring around them is still untested.
 
 ---
 
@@ -132,17 +140,15 @@ Resolves: DESIGN dependency "per-language frequency_rank dataset", "dead fields"
 - **Proper-noun guard** — never replace mid-sentence capitalized tokens, acronyms,
   or stoplisted brand names (SPEC open question 1).
 
-## Phase 3 — Phrases and density control (Q3-B, with Q3-A as safety net) ⬜ next
+## Phase 3 — Phrases and density control (Q3-B, with Q3-A as safety net) ✅ done
 
 - Multi-token dictionary entries (`token_count > 1`) served to the client.
-- Longest-match n-gram tokenizer in the content script (currently single-token).
-- **Density cap**: never exceed X% of tokens per sentence/page; priority ordering
+- Longest-match n-gram tokenizer in the content script.
+- **Density cap**: never exceed X% of a sentence's words; priority ordering
   (frontier > due-for-review > trivial) decides what gets swapped — prevents the
   pidgin effect before sentence swap exists.
 
-See "Picking up Phase 3" below for how the Phase 2 code shapes this.
-
-## Phase 4 — LLM precompute pipeline (Q1-E, Q4-A) ⬜ planned
+## Phase 4 — LLM precompute pipeline (Q1-E, Q4-A) ⬜ next
 
 - `Linguaswap.LLM` (Req + Claude Messages API) generating, at word-add/import
   time: translation, lemma, POS, and **target-side inflected forms** into `forms`.
@@ -416,17 +422,144 @@ exactly the 494 entries the file carries.
 One `DEBUG` constant at the top of `content.js` gates both the title trace and
 the load banner.
 
-## Picking up Phase 3
+## What Phase 3 built
 
-Two things about the Phase 2 code shape the work:
+Two things the client could not do before: match an entry that is more than one
+word, and decide *not* to swap something it could have swapped.
 
-1. **The tokenizer is where n-grams go.** `segmentText/2` in
-   `chrome-extension/lemmatizer.js` walks one whitespace segment at a time. A
-   longest-match n-gram pass belongs there, behind the same `parts` contract, so
-   neither caller has to change. `words.token_count` already marks phrase
-   entries, and the API would need to send it.
-2. **The density cap needs a second pass.** `segmentText/2` currently decides
-   each token independently and in order. Capping swaps per sentence means
-   collecting candidates first, then choosing among them by priority (frontier >
-   due-for-review > trivial) — so expect the function to grow a "decide, then
-   commit" shape rather than staying a single loop.
+| Thing | Where |
+| --- | --- |
+| N-gram matching, density cap, the "decide then commit" tokenizer | `chrome-extension/lemmatizer.js` |
+| Tests for phrases, priority and spacing | `chrome-extension/test/lemmatizer.test.js` |
+| Dictionary build and swap options on the client | `chrome-extension/content.js` |
+| `swap` settings carried through with the dictionary | `chrome-extension/background.js` |
+| `token_count` and `swap.max_density` served | `lib/linguaswap_web/api_controller.ex` |
+| `Vocabulary.swap_density/1`, `default_swap_density/0` | `lib/linguaswap/vocabulary.ex` |
+| 45 phrase entries | `priv/data/en-es.tsv` |
+
+### The shape of the tokenizer now
+
+`segmentText/3` used to be one loop that decided each token as it reached it.
+It is now four passes, because a density cap cannot be applied by a function
+that has already committed to the swap in front of it:
+
+1. **Tokenize** into whitespace runs and word tokens, each already split into
+   prefix / core / suffix. Whitespace is kept verbatim, which is what lets a
+   phrase spanning `a  lot   of` be restored with its original spacing.
+2. **Mark sentences.** Every word token learns which sentence it is in, using
+   the same `startsSentence/1` rule Phase 2 introduced for the proper-noun
+   guard. The cap is per sentence, so this has to happen before anything is
+   chosen.
+3. **Match**, longest-first and left to right. At each position the longest
+   phrase that resolves wins and consumes its tokens.
+4. **Cap**, by priority and then by spacing.
+
+The `parts` contract did not change, so neither caller — the page walker or the
+YouTube title translator — needed rewriting. Both gained one argument.
+
+### Three decisions worth knowing about
+
+1. **Only the head of a phrase is lemmatized.** English phrases carry their
+   inflection on the first word — "gave up", "looks after", "took care of" — so
+   `resolvePhrase` walks `candidates()` for the head and matches the rest as
+   they stand. The alternative, lemmatizing every position, is a combinatorial
+   product of candidate lists for a case English does not actually have.
+
+2. **A phrase must be an uninterrupted run.** Punctuation between two of its
+   words ends it, so "a lot, of them" never reaches the `a lot of` entry, and a
+   name anywhere inside disqualifies the whole phrase. Same principle as Phase
+   2: a wrong swap is worse than a missed one.
+
+3. **Spacing, not reading order, breaks a priority tie.** This is the decision
+   the cap turns on. Taking capped swaps in reading order translates the front
+   of a long sentence solid and leaves the back untouched — the pidgin effect
+   moved rather than removed, and worse, it strips the English context that
+   makes a swapped word guessable from its neighbours. So within one priority
+   each pick goes to the candidate farthest from anything already swapped in
+   that sentence. On the 29-word sentence quoted below, 35% buys ten swapped
+   words either way; the difference is whether they arrive in one Spanish block
+   at the front or spaced through the line.
+
+   The priority order itself is the roadmap's: frontier (`hard`) before
+   due-for-review (`simple`) before mastered (`trivial`). Spacing only ever
+   breaks a tie inside one of those tiers; it never promotes a mastered word
+   over one being learned.
+
+### Where the numbers come from
+
+- **`maxPhraseTokens`** is the longest `token_count` in the words the API
+  actually sent, computed by the client on each dictionary load. A user whose
+  pool holds no phrases gets 1, and the n-gram pass costs nothing.
+- **`maxDensity`** is `settings.swap_density`, default 0.35, served in the
+  `swap` object alongside the dictionary. It is a learning parameter, so it
+  lives with `word_budget` and belongs to the server; the pure tokenizer
+  defaults to *uncapped* so that a caller that has not resolved a setting
+  behaves as it did before Phase 3, and `content.js` supplies the fallback.
+- A sentence's allowance is `max(1, floor(words * density))`. The floor of one
+  is deliberate: headings, links and list items are one- and two-word
+  "sentences", and rounding them to zero would silence most of a real page.
+- A phrase spends its whole token count against the allowance, because three
+  English words becoming one Spanish phrase is three words the reader no longer
+  has.
+
+### The phrase entries
+
+`priv/data/en-es.tsv` gained 45 phrases, from two tokens ("give up") to four
+("at the same time"). Their frequency ranks are the one hand-placed thing in
+that file, and are marked as such in its header: the OpenSubtitles list
+`build_dictionary.py` reads is unigrams, so it cannot say where "of course"
+belongs among single words. The ranks interleave the phrases with the words
+rather than appending them after all 494, because a phrase ranked 495 would be
+unreachable for every user until they had graduated the entire dictionary. A
+default 50-word budget reaches "of course" and "come on".
+
+### Verified behaviour
+
+Against the real dictionary at a 120-word budget, "Of course we can go out and
+find out what happened to the man at the same time, but we have a lot of work to
+do right now." becomes, uncapped:
+
+> Por supuesto nosotros poder ir fuera y find fuera qué happened a el hombre en
+> el same tiempo, pero nosotros tener muchos work a hacer ahora mismo.
+
+and at the default 0.35:
+
+> Por supuesto we poder go out y find out qué happened to the hombre at the same
+> tiempo, but we tener a lot of work to do ahora mismo.
+
+`Of course`, `a lot of` and `right now` are each matched as one entry rather
+than as their component words. `at the same time` and `find out` are not: they
+rank 386 and 202, outside a 120-word budget, so the pool does not hold them yet
+and their words are swapped singly (`en el same tiempo`, `find fuera`). That is
+the budget model working on phrases exactly as it does on words.
+
+The capped version keeps ten of the twenty-nine words in Spanish and spaces them
+through the line. `a lot of` is among what it gives up, which is the cap
+working: a three-token phrase costs three of the ten.
+
+## Picking up Phase 4
+
+Three things about the Phase 3 code shape the work:
+
+1. **`forms` is still empty and nothing reads it.** The client picks a
+   translation in exactly one place — `applyCase(first.core, entry.translation)`
+   in `buildParts`. That is where a stored inflected form has to be chosen
+   instead, from features the lemmatizer already knows it detected on the way
+   in. It does not currently *report* them: `candidates()` throws away which
+   rule fired, and Phase 4 needs that back.
+
+2. **Phrases make the target side harder, not easier.** "give up" → "rendirse"
+   is a base form the way "run" → "correr" is, but a phrase has a head that
+   inflects and a tail that does not, so the generated `forms` for a phrase are
+   not the same shape as for a word. Decide that before generating anything.
+
+3. **The importer is the natural place to hang generation.** It already parses,
+   upserts and prunes per language pair, and `--dry-run` exists. An LLM pass
+   that fills `translation`, `pos` and `forms` for rows that lack them fits
+   there rather than in a new task, and the review workflow the phase calls for
+   is then a dashboard view over `source: "llm"` rows.
+
+And one standing risk: **en-uz.** Phase 4 is the first phase that could
+plausibly fill it in, and it is also the phase most likely to fill it in wrongly
+with nobody to check. The gap table's answer — a native reviewer — has not
+changed.

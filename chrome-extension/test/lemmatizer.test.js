@@ -139,19 +139,26 @@ test("startsSentence reads the preceding token", () => {
 });
 
 // A dictionary shaped like the one the API sends: entries keyed by spelling
-// and by lemma, sharing one object per entry.
+// and by lemma, sharing one object per entry. A phrase entry is keyed by its
+// words joined with single spaces, which is what the tokenizer looks up.
+// `word: [translation, status]` sets a status other than the "hard" default.
 function dictionary(entries) {
   const map = {};
-  for (const [word, translation] of Object.entries(entries)) {
-    map[word] = { original: word, translation, status: "hard" };
+  for (const [word, spec] of Object.entries(entries)) {
+    const [translation, status] = Array.isArray(spec) ? spec : [spec, "hard"];
+    map[word] = { original: word, translation, status };
   }
   return (candidate) => map[candidate] || null;
 }
 
-function swap(text, entries) {
-  const { parts, matched } = lemmatizer.segmentText(text, dictionary(entries));
+function swap(text, entries, options) {
+  const { parts, matched } = lemmatizer.segmentText(text, dictionary(entries), options);
   return { text: lemmatizer.renderParts(parts), matched, parts };
 }
+
+// The dictionaries below carry phrases, so the caller has to say how long the
+// longest one is — exactly as the content script does from `token_count`.
+const PHRASES = { maxPhraseTokens: 3 };
 
 test("segmentText swaps inflected forms through their lemma", () => {
   const { text } = swap("She was running and he stopped.", {
@@ -212,4 +219,140 @@ test("a swap part carries the entry the API knows, not the page form", () => {
   assert.strictEqual(swapped.core, "running");
   assert.strictEqual(swapped.entry.original, "run");
   assert.strictEqual(swapped.display, "correr");
+});
+
+test("a phrase beats the single words inside it", () => {
+  const dict = { "a lot of": "muchos", a: "un", lot: "montón", of: "de", time: "tiempo" };
+
+  assert.strictEqual(swap("I need a lot of time", dict, PHRASES).text, "I need muchos tiempo");
+});
+
+test("a phrase matches through its head's inflection", () => {
+  // English phrases inflect on the head, which is the first word here.
+  const dict = { "give up": "rendirse", "look for": "buscar" };
+
+  assert.strictEqual(swap("He gave up", dict, PHRASES).text, "He rendirse");
+  assert.strictEqual(swap("She gives up", dict, PHRASES).text, "She rendirse");
+  assert.strictEqual(swap("They looked for it", dict, PHRASES).text, "They buscar it");
+});
+
+test("a phrase carries the page's own spacing into the reveal", () => {
+  const { parts } = swap("say a  lot   of things", { "a lot of": "muchos" }, PHRASES);
+  const swapped = parts.find((p) => p.type === "swap");
+
+  assert.strictEqual(swapped.core, "a  lot   of");
+  assert.strictEqual(swapped.tokens, 3);
+});
+
+test("punctuation inside a run stops a phrase from matching", () => {
+  const dict = { "a lot of": "muchos" };
+
+  assert.strictEqual(swap("a lot, of them", dict, PHRASES).matched, false);
+  assert.strictEqual(swap("a lot (of) them", dict, PHRASES).matched, false);
+});
+
+test("a name anywhere in a run stops a phrase from matching", () => {
+  const dict = { "out of": "fuera de", out: "fuera" };
+
+  // "Africa" is a name, so "out of Africa" is not offered as a phrase; the
+  // shorter "out of" still is.
+  assert.strictEqual(swap("straight out of Africa", dict, PHRASES).text, "straight fuera de Africa");
+});
+
+test("phrases are invisible to a caller that does not ask for them", () => {
+  // The default keeps a pre-phrase caller behaving exactly as it did.
+  const dict = { "a lot of": "muchos", a: "un" };
+
+  assert.strictEqual(swap("a lot of time", dict).text, "un lot of time");
+});
+
+test("segmentText is uncapped unless the caller sets a density", () => {
+  const dict = { one: "uno", two: "dos", three: "tres", four: "cuatro" };
+
+  assert.strictEqual(swap("one two three four", dict).text, "uno dos tres cuatro");
+});
+
+test("the density cap leaves most of a sentence in English", () => {
+  const dict = {
+    one: "uno", two: "dos", three: "tres", four: "cuatro", five: "cinco",
+    six: "seis", seven: "siete", eight: "ocho", nine: "nueve", ten: "diez",
+  };
+
+  // Ten words at 30% is three swaps, and they are spread across the sentence
+  // rather than taken in reading order: a solid Spanish opening followed by a
+  // solid English tail is the pidgin the cap exists to prevent, and it would
+  // leave the swapped words with no English context to be guessed from.
+  assert.strictEqual(
+    swap("one two three four five six seven eight nine ten", dict, { maxDensity: 0.3 }).text,
+    "uno two three four cinco six seven eight nine diez"
+  );
+});
+
+test("priority still outranks spacing", () => {
+  const dict = {
+    one: ["uno", "trivial"],
+    two: ["dos", "hard"],
+    three: ["tres", "hard"],
+    four: ["cuatro", "trivial"],
+    five: ["cinco", "trivial"],
+    six: ["seis", "trivial"],
+  };
+
+  // Six words at 35% is two swaps. Both go to the words still being learned
+  // even though they sit next to each other, because spacing only ever breaks
+  // a tie inside one priority.
+  assert.strictEqual(
+    swap("one two three four five six", dict, { maxDensity: 0.35 }).text,
+    "one dos tres four five six"
+  );
+});
+
+test("the cap gives up mastered words before words still being learned", () => {
+  const dict = {
+    one: ["uno", "trivial"],
+    two: ["dos", "trivial"],
+    three: ["tres", "hard"],
+    four: ["cuatro", "simple"],
+  };
+
+  // Four words at 25% is one swap, and it goes to the word the user is still
+  // learning rather than to the first one on the line.
+  assert.strictEqual(swap("one two three four", dict, { maxDensity: 0.25 }).text, "one two tres four");
+});
+
+test("the cap counts every word a phrase covers", () => {
+  const dict = { "a lot of": "muchos", time: "tiempo", here: "aquí" };
+
+  // Five words at 60% is three swaps, and the phrase spends all three: three
+  // English words became one Spanish phrase.
+  assert.strictEqual(
+    swap("a lot of time here", dict, { maxDensity: 0.6, maxPhraseTokens: 3 }).text,
+    "muchos time here"
+  );
+});
+
+test("each sentence gets its own share of swaps", () => {
+  const dict = { one: "uno", two: "dos", three: "tres", four: "cuatro" };
+
+  assert.strictEqual(
+    swap("one two three four. one two three four.", dict, { maxDensity: 0.25 }).text,
+    "uno two three four. uno two three four."
+  );
+});
+
+test("a short fragment still gets one swap", () => {
+  // Headings, links and list items are one- and two-word "sentences". Rounding
+  // them down to nothing would silence most of a real page.
+  const dict = { home: "inicio", the: "el", end: "fin" };
+
+  assert.strictEqual(swap("Home", dict, { maxDensity: 0.3 }).text, "Inicio");
+  assert.strictEqual(swap("The end", dict, { maxDensity: 0.3 }).text, "El end");
+});
+
+test("a density of zero swaps nothing", () => {
+  const dict = { one: "uno", two: "dos" };
+  const result = swap("one two", dict, { maxDensity: 0 });
+
+  assert.strictEqual(result.text, "one two");
+  assert.strictEqual(result.matched, false);
 });

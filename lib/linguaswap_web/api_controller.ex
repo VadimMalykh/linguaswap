@@ -45,12 +45,23 @@ defmodule LinguaswapWeb.ApiController do
           # spelling, so page text like "running" reaches the "run" entry.
           lemma: word.lemma,
           translation: word.target_translation,
+          # 1 for a word, >1 for a phrase. The client walks n-grams only as far
+          # as the longest entry it was actually sent, so a user whose pool
+          # holds no phrases pays nothing for the phrase pass.
+          token_count: word.token_count,
           status: status,
           reveal_count: reveal_count
         }
       end)
 
-    json(conn, %{words: result, pool: Vocabulary.pool_stats(user.id, language_pair, budget)})
+    json(conn, %{
+      words: result,
+      pool: Vocabulary.pool_stats(user.id, language_pair, budget),
+      # How much of a sentence the client may swap. Sent with the dictionary
+      # because it governs how the dictionary is used, and because it is a
+      # per-user learning setting the extension should not be guessing at.
+      swap: %{max_density: Vocabulary.swap_density(user.settings)}
+    })
   end
 
   def record_reveal(conn, %{"word" => original_word, "language_pair" => language_pair}) do

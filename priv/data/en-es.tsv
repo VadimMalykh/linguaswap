@@ -11,6 +11,17 @@
 # profanities that are genuinely frequent in subtitles but a surprising default
 # to swap into someone's web pages.
 #
+# The file ends with a phrase section (Phase 3). Those entries are multi-word,
+# and `token_count` is derived from them on import, which is what tells the
+# extension how far to walk its n-gram pass.
+#
+# Their ranks are the one hand-placed thing in this file. The corpus list is
+# unigrams, so it cannot say where "of course" belongs among single words; the
+# ranks below are an estimate of where these phrases would fall if it could,
+# and they are interleaved with the words rather than appended after them so a
+# learner actually reaches a phrase before exhausting 494 single words. Replace
+# them the day a bigram frequency list is wired into build_dictionary.py.
+#
 # Columns: original_word <TAB> target_translation <TAB> frequency_rank
 # Import with: mix linguaswap.import_words priv/data/en-es.tsv
 you	tú	1
@@ -507,3 +518,58 @@ sense	sentido	491
 sex	sexo	492
 lie	mentira	493
 master	maestro	494
+
+# --- Phrases -----------------------------------------------------------------
+#
+# Multi-word entries. The extension matches the longest one that fits, so
+# "a lot of" wins over the "a" entry that starts in the same place, and it
+# lemmatizes only the head: "gave up" and "gives up" both reach "give up",
+# which is where English phrases carry their inflection.
+#
+# The target side is still one base form, as it is for single words — "give up"
+# is "rendirse", never "se rindió". Phase 4 is what fixes that.
+of course	por supuesto	38
+come on	vamos	44
+all right	está bien	52
+thank you	gracias	58
+a little	un poco	66
+right now	ahora mismo	74
+a lot of	muchos	82
+no one	nadie	90
+at all	en absoluto	98
+at least	al menos	106
+as well	también	114
+too much	demasiado	122
+so much	tanto	130
+how much	cuánto	138
+how many	cuántos	146
+a few	unos pocos	154
+in fact	de hecho	162
+for example	por ejemplo	170
+by the way	por cierto	178
+excuse me	disculpe	186
+go ahead	adelante	194
+find out	averiguar	202
+come back	volver	210
+give up	rendirse	218
+look for	buscar	226
+make sure	asegurarse	234
+get up	levantarse	242
+wake up	despertar	250
+sit down	sentarse	258
+shut up	callarse	266
+go out	salir	274
+take care	cuidar	282
+so far	hasta ahora	290
+at first	al principio	298
+over there	allí	306
+once again	otra vez	314
+no longer	ya no	322
+more or less	más o menos	330
+as soon as	tan pronto como	338
+as long as	mientras	346
+as well as	así como	354
+in front of	delante de	362
+point of view	punto de vista	370
+these days	hoy en día	378
+at the same time	al mismo tiempo	386

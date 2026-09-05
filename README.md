@@ -4,20 +4,22 @@ A Chrome extension that helps you learn a new language by gradually replacing wo
 
 ## Status
 
-Phases 0–2 of [ROADMAP.md](ROADMAP.md) are built and tested; **Phase 3 (phrases
-and density control) is next.**
+Phases 0–3 of [ROADMAP.md](ROADMAP.md) are built and tested; **Phase 4 (the LLM
+precompute pipeline) is next.**
 
 Working today: sign-in, a per-user pool of words in flight (default 50, refilled
-as words graduate), in-page word swapping with client-side lemmatization so one
-entry covers every inflection, hover-to-reveal and Hard/Simple/Easy rating, a
-progress dashboard, and translated YouTube titles. The extension reports the
-swaps it actually made, so a word graduates on real exposure rather than on
-having been in the pool while you browsed.
+as words graduate), in-page swapping with client-side lemmatization so one entry
+covers every inflection, multi-word phrase entries matched longest-first, a
+density cap that keeps most of every sentence in English, hover-to-reveal and
+Hard/Simple/Easy rating, a progress dashboard, and translated YouTube titles.
+The extension reports the swaps it actually made, so a word graduates on real
+exposure rather than on having been in the pool while you browsed.
 
-Not yet: multi-word phrases, any cap on swap density, inflected output in the
-target language, and any LLM involvement. The Spanish dictionary holds 494
-entries in corpus frequency order; **Uzbek is still the original 98-word seed**.
-ROADMAP.md has the full gap list and what addresses each.
+Not yet: inflected output in the target language — the Spanish side is always
+the dictionary form — and any LLM involvement. The Spanish dictionary holds 539
+entries in corpus frequency order, 45 of them phrases; **Uzbek is still the
+original 98-word seed**. ROADMAP.md has the full gap list and what addresses
+each.
 
 ## Prerequisites
 

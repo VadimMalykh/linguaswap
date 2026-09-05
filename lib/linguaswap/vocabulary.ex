@@ -17,6 +17,11 @@ defmodule Linguaswap.Vocabulary do
 
   @default_word_budget 50
 
+  # Share of a sentence the client may swap. A learning setting like the word
+  # budget, and owned here for the same reason: the extension asks how much of a
+  # page to translate, it does not decide.
+  @default_swap_density 0.35
+
   def list_words_for_user(user_id, language_pair \\ nil) do
     query =
       from w in Word, join: uw in UserWord, on: w.id == uw.word_id, where: uw.user_id == ^user_id
@@ -502,6 +507,45 @@ defmodule Linguaswap.Vocabulary do
   end
 
   def word_budget(_settings), do: @default_word_budget
+
+  @doc """
+  Default share of a sentence's words that may be swapped.
+  """
+  def default_swap_density, do: @default_swap_density
+
+  @doc """
+  Resolves the user's swap density from their settings map.
+
+  The counterpart of `word_budget/1`: the budget caps how many words a user is
+  learning, this caps how much of any one sentence is in the target language. A
+  page dense in pool words would otherwise come out as pidgin, which is
+  unreadable long before it is educational.
+
+  `0.0` is a meaningful value — it turns swapping off without unsetting the
+  extension — so it is accepted, unlike a zero budget. Anything above `1.0` is
+  clamped rather than rejected: it means "swap everything", which is what 1.0
+  already does.
+  """
+  def swap_density(settings) when is_map(settings) do
+    case Map.get(settings, "swap_density") do
+      density when is_number(density) -> clamp_density(density)
+      density when is_binary(density) -> parse_density(density)
+      _ -> @default_swap_density
+    end
+  end
+
+  def swap_density(_settings), do: @default_swap_density
+
+  defp parse_density(value) do
+    case Float.parse(value) do
+      {parsed, ""} -> clamp_density(parsed)
+      _ -> @default_swap_density
+    end
+  end
+
+  defp clamp_density(density) when density >= 0 and density <= 1, do: density / 1
+  defp clamp_density(density) when density > 1, do: 1.0
+  defp clamp_density(_density), do: @default_swap_density
 
   @doc """
   The language pair served for a user's target language.

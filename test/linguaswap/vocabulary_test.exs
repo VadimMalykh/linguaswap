@@ -1002,6 +1002,35 @@ defmodule Linguaswap.VocabularyTest do
     end
   end
 
+  describe "swap_density/1" do
+    test "defaults when unset or unusable" do
+      assert Vocabulary.swap_density(%{}) == Vocabulary.default_swap_density()
+      assert Vocabulary.swap_density(nil) == Vocabulary.default_swap_density()
+
+      assert Vocabulary.swap_density(%{"swap_density" => "half"}) ==
+               Vocabulary.default_swap_density()
+
+      # A negative share is nonsense rather than a request for none.
+      assert Vocabulary.swap_density(%{"swap_density" => -0.5}) ==
+               Vocabulary.default_swap_density()
+    end
+
+    test "reads a number or numeric string from settings" do
+      assert Vocabulary.swap_density(%{"swap_density" => 0.2}) == 0.2
+      assert Vocabulary.swap_density(%{"swap_density" => "0.2"}) == 0.2
+    end
+
+    test "zero is a real setting, unlike a zero budget" do
+      # Swapping nothing turns the extension off for a while without logging out
+      # of it; carrying no words at all is only ever a mistake.
+      assert Vocabulary.swap_density(%{"swap_density" => 0}) == 0.0
+    end
+
+    test "clamps an over-large share instead of rejecting it" do
+      assert Vocabulary.swap_density(%{"swap_density" => 4}) == 1.0
+    end
+  end
+
   describe "pool_stats/3" do
     test "reports active, graduated and remaining counts" do
       user = AccountsFixtures.user_fixture() |> with_budget(2)

@@ -54,6 +54,52 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert %{"words" => []} = json_response(conn, 200)
     end
 
+    test "serves token_count so the client knows how far to walk n-grams", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, phrase} =
+        Vocabulary.create_word(%{
+          original_word: "a lot of",
+          target_translation: "muchos",
+          language_pair: "en-es",
+          frequency_rank: 1
+        })
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "time",
+          target_translation: "tiempo",
+          language_pair: "en-es",
+          frequency_rank: 2
+        })
+
+      Vocabulary.record_word_reveal(user.id, phrase.id)
+      Vocabulary.record_word_reveal(user.id, word.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => words} = json_response(conn, 200)
+
+      assert %{"original" => "a lot of", "lemma" => "a lot of", "token_count" => 3} =
+               Enum.find(words, &(&1["original"] == "a lot of"))
+
+      assert %{"token_count" => 1} = Enum.find(words, &(&1["original"] == "time"))
+    end
+
+    test "sends the default swap density along with the dictionary", %{conn: conn} do
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+
+      assert %{"swap" => %{"max_density" => density}} = json_response(conn, 200)
+      assert density == Vocabulary.default_swap_density()
+    end
+
+    test "sends the user's own swap density when they have set one", %{conn: conn, user: user} do
+      {:ok, _} = Linguaswap.Accounts.update_user_settings(user, %{"swap_density" => 0.1})
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"swap" => %{"max_density" => 0.1}} = json_response(conn, 200)
+    end
+
     test "activates frontier words up to the budget and reports pool state", %{
       conn: conn,
       user: user

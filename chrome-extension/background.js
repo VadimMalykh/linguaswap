@@ -17,6 +17,9 @@ async function apiBase() {
   return `${normalizeServerUrl(serverUrl) || DEFAULT_SERVER_URL}/api/v1`;
 }
 
+// The whole /words payload, not just the list: the dictionary arrives with the
+// swap settings that decide how it may be used, and the two have to stay
+// together through the cache.
 let cachedWords = null;
 let cachedLanguagePair = null;
 
@@ -48,7 +51,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   if (message.type === "GET_WORDS") {
     handleGetWords(message.languagePair)
-      .then((words) => sendResponse({ ok: true, words }))
+      .then((data) => sendResponse({ ok: true, words: data.words, swap: data.swap }))
       .catch((err) => sendResponse({ ok: false, error: err.message }));
     return true;
   }
@@ -168,9 +171,9 @@ async function handleGetWords(languagePair) {
 
   if (!resp.ok) throw new Error(data.error || "Failed to fetch words");
 
-  cachedWords = data.words;
+  cachedWords = { words: data.words, swap: data.swap || null };
   cachedLanguagePair = languagePair;
-  return data.words;
+  return cachedWords;
 }
 
 async function handleRecordReveal(word, languagePair) {
