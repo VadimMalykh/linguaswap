@@ -24,9 +24,13 @@ in [DESIGN.md](DESIGN.md). Summary:
 - [x] en-es dictionary rebuilt from a corpus frequency list (539 entries)
 - [x] **Roadmap Phase 3** — phrase entries, n-gram tokenizer, per-sentence
       density cap with priority ordering
+- [x] **Roadmap Phase 4** — LLM precompute pipeline: `Linguaswap.LLM` over the
+      Claude Messages API, generated part of speech and target-side inflected
+      forms, a cost cap and rate limit in front of every call, an approve/reject
+      review queue at `/dictionary/review`, and client-side form selection from
+      the feature the lemmatizer detected
 
 ### Next 📋
-- [ ] **Roadmap Phase 4** — LLM pipeline for precomputed target inflections
 - [ ] **Roadmap Phase 5** — sentence-level swap
 
 ---
@@ -42,7 +46,7 @@ in [DESIGN.md](DESIGN.md). Summary:
 │                      Elixir Backend                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
 │  │  Phoenix    │  │   LiveView   │  │   LLM Integration   │ │
-│  │  API        │  │   Dashboard  │  │   (OpenAI/Anthropic)│ │
+│  │  API        │  │   Dashboard  │  │   (Claude API, Req) │ │
 │  └─────────────┘  └─────────────┘  └─────────────────────┘ │
 │         │                │                    │             │
 │  ┌─────────────────────────────────────────────────────────┐│
@@ -137,14 +141,28 @@ in [DESIGN.md](DESIGN.md). Summary:
 ### 6. LLM Integration
 
 **Purpose:**
-- Generate word difficulty rankings for new users
-- Provide translations (initial dictionary seed)
-- Suggest next words to learn
+- Generate target-side inflected forms so a swapped word fits the English
+  sentence it lands in ("she era", not "she ser") — the main product
+- Fill in part of speech, which is what tells a plural noun from a
+  third-person verb when the client sees an English "-s"
+- Provide a translation for an entry that arrives without one
+- Later: word difficulty ranking, and sentence-level translation (Phase 5)
 
-**Implementation:**
-- Real-time API calls for new pages (async, non-blocking)
-- Results cached in user
-- Fallback to dictionary static dictionary for offline
+**Implementation (Phase 4):**
+- `Linguaswap.LLM` is provider-agnostic; `Linguaswap.LLM.Provider` is the
+  one-callback seam. `Provider.Anthropic` (the default) speaks the Claude
+  Messages API over `Req` — Elixir has no official Anthropic SDK — and
+  `Provider.OpenAICompatible` speaks to any `/v1/chat/completions` service.
+  Either way the reply is pinned to a JSON schema by structured outputs, so the
+  importer parses rather than scrapes
+- Generation happens at import time, not page-load time: the runtime client
+  stays dumb and fast over precomputed data (DESIGN Q4-A)
+- `Linguaswap.LLM.Budget` guards every call — a sliding requests-per-minute
+  window a caller waits on, and a total cost cap for the run that stops it
+- Nothing generated is served until approved: rows land as `pending`, the
+  extension is sent `%{}` for their forms, and a human clears them at
+  `/dictionary/review`
+- No API key configured means no generation, never a partial or failed import
 
 ## Data Models
 
@@ -218,6 +236,7 @@ in [DESIGN.md](DESIGN.md). Summary:
 ### Features (Post-MVP)
 - [ ] Sentence-level translation (the "flip" approach)
 - [ ] Visual difficulty indicators (color coding)
+- [x] Word inflection generation via LLM (Phase 4)
 - [ ] Word difficulty ranking via LLM
 - [ ] Progress gamification
 - [ ] Browser sync across devices
@@ -227,7 +246,8 @@ in [DESIGN.md](DESIGN.md). Summary:
 - **Backend:** Elixir 1.19, Phoenix 1.8.5, LiveView
 - **Database:** PostgreSQL 16 (Docker)
 - **Auth:** Phoenix auth (phx.gen.auth)
-- **LLM:** OpenAI API (not yet implemented)
+- **LLM:** Claude Messages API (`claude-opus-5` by default), called with `Req`;
+  swappable for any OpenAI-compatible endpoint via `Linguaswap.LLM.Provider`
 - **Extension:** Vanilla JS + Chrome APIs
 
 ## How to Run
@@ -259,5 +279,11 @@ open http://localhost:4000
    list is imported.
 3. Should we integrate with existing spaced repetition systems (Anki)?
    **Deferred to Phase 6.**
-4. Rate limiting for LLM calls (cost management)? **Deferred to Phase 4**, which
-   is where the first LLM call appears; nothing in the app calls an LLM today.
+4. Rate limiting for LLM calls (cost management)? **Answered in Phase 4.**
+   `Linguaswap.LLM.Budget` sits in front of every request with two limits: a
+   sliding one-minute request window, which a caller waits on rather than
+   failing, and a total spend cap for the life of the process — which for a
+   `mix` task is the run. Cost is computed from the usage the API reports,
+   priced per model, and a model with no known price is billed at zero rather
+   than a guess. Generation also walks the dictionary in frequency order, so a
+   run stopped by the cap has bought the most useful words first.

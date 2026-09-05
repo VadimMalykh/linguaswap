@@ -1,5 +1,6 @@
 defmodule LinguaswapWeb.DashboardLive do
   use LinguaswapWeb, :live_view
+  alias Linguaswap.Dictionary
   alias Linguaswap.Vocabulary
 
   def mount(_params, _session, socket) do
@@ -10,7 +11,15 @@ defmodule LinguaswapWeb.DashboardLive do
     budget = Vocabulary.word_budget(user.settings)
     pool = Vocabulary.pool_stats(user.id, language_pair, budget)
 
-    {:ok, assign(socket, stats: stats, pool: pool, language_pair: language_pair)}
+    {:ok,
+     assign(socket,
+       stats: stats,
+       pool: pool,
+       language_pair: language_pair,
+       # Generated forms sit unserved until someone approves them, so the count
+       # belongs where it will be seen rather than behind a link nobody clicks.
+       pending_review: Dictionary.review_stats(language_pair).pending
+     )}
   end
 
   defp pool_percentage(%{active: active, budget: budget}) when budget > 0 do
@@ -103,6 +112,13 @@ defmodule LinguaswapWeb.DashboardLive do
                 class="block w-full text-center bg-emerald-500 text-white py-2 px-4 rounded-lg hover:bg-emerald-600 transition"
               >
                 Settings
+              </.link>
+              <.link
+                navigate="/dictionary/review"
+                class="block w-full text-center bg-white text-emerald-700 border border-emerald-200 py-2 px-4 rounded-lg hover:bg-emerald-50 transition"
+              >
+                Review generated forms
+                <span :if={@pending_review > 0} class="font-semibold">({@pending_review})</span>
               </.link>
             </div>
           </div>

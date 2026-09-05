@@ -141,10 +141,19 @@ test("startsSentence reads the preceding token", () => {
 // A dictionary shaped like the one the API sends: entries keyed by spelling
 // and by lemma, sharing one object per entry. A phrase entry is keyed by its
 // words joined with single spaces, which is what the tokenizer looks up.
-// `word: [translation, status]` sets a status other than the "hard" default.
+//
+// Three spellings for an entry, in rising detail:
+//   word: "translation"
+//   word: [translation, status]           — a status other than "hard"
+//   word: { translation, pos, forms }     — the Phase 4 fields as well
 function dictionary(entries) {
   const map = {};
   for (const [word, spec] of Object.entries(entries)) {
+    if (spec && typeof spec === "object" && !Array.isArray(spec)) {
+      map[word] = Object.assign({ original: word, status: "hard" }, spec);
+      continue;
+    }
+
     const [translation, status] = Array.isArray(spec) ? spec : [spec, "hard"];
     map[word] = { original: word, translation, status };
   }
@@ -355,4 +364,133 @@ test("a density of zero swaps nothing", () => {
 
   assert.strictEqual(result.text, "one two");
   assert.strictEqual(result.matched, false);
+});
+
+// --- Inflected target forms (Phase 4) -------------------------------------
+//
+// The lemmatizer reports *why* a surface word reached its entry, and the swap
+// uses that to pick a stored target form instead of the dictionary one.
+
+const { analyze, formKeysFor, selectForm, IRREGULAR, IRREGULAR_FEATURES } = lemmatizer;
+
+// The feature attached to the candidate that reached `base`, or undefined when
+// the word never reaches it.
+function featureFor(surface, base) {
+  const hit = analyze(surface).find((candidate) => candidate.base === base);
+  return hit && hit.feature;
+}
+
+test("analyze reports which rule reached a base form", () => {
+  assert.strictEqual(featureFor("run", "run"), "base");
+  assert.strictEqual(featureFor("running", "run"), "gerund");
+  assert.strictEqual(featureFor("walked", "walk"), "past");
+  assert.strictEqual(featureFor("studied", "study"), "past");
+  assert.strictEqual(featureFor("happier", "happy"), "comparative");
+  assert.strictEqual(featureFor("happiest", "happy"), "superlative");
+});
+
+test("analyze leaves an English -s unresolved", () => {
+  // Nothing about the surface says whether "-s" is a plural or a verb ending;
+  // only the entry's part of speech can decide, so the feature stays vague.
+  assert.strictEqual(featureFor("walls", "wall"), "s");
+  assert.strictEqual(featureFor("runs", "run"), "s");
+  assert.strictEqual(featureFor("cities", "city"), "s");
+});
+
+test("analyze knows what each irregular form is", () => {
+  assert.strictEqual(featureFor("was", "be"), "past");
+  assert.strictEqual(featureFor("been", "be"), "past_participle");
+  assert.strictEqual(featureFor("being", "be"), "gerund");
+  assert.strictEqual(featureFor("is", "be"), "third_person");
+  assert.strictEqual(featureFor("children", "child"), "plural");
+  assert.strictEqual(featureFor("better", "good"), "comparative");
+  assert.strictEqual(featureFor("worst", "bad"), "superlative");
+});
+
+test("every irregular carries a feature", () => {
+  // The two tables are separate so the dictionary builder can keep parsing
+  // IRREGULAR; this is what keeps them from drifting apart.
+  const missing = Object.keys(IRREGULAR).filter((word) => !IRREGULAR_FEATURES[word]);
+  assert.deepStrictEqual(missing, []);
+
+  const extra = Object.keys(IRREGULAR_FEATURES).filter((word) => !IRREGULAR[word]);
+  assert.deepStrictEqual(extra, []);
+});
+
+test("an -s is a plural on a noun and a verb ending on a verb", () => {
+  assert.deepStrictEqual(formKeysFor("s", "noun"), ["plural"]);
+  assert.deepStrictEqual(formKeysFor("s", "verb"), ["third_person"]);
+  // Neither reading applies to anything else, so nothing is substituted.
+  assert.deepStrictEqual(formKeysFor("s", "preposition"), []);
+  assert.deepStrictEqual(formKeysFor("s", null), []);
+});
+
+test("a past participle falls back to the past form", () => {
+  const entry = { translation: "romper", pos: "verb", forms: { past: "rompió" } };
+
+  assert.strictEqual(selectForm(entry, "past_participle"), "rompió");
+});
+
+test("selectForm falls back to the base translation", () => {
+  const entry = { translation: "correr", pos: "verb", forms: { past: "corrió" } };
+
+  assert.strictEqual(selectForm(entry, "base"), "correr");
+  assert.strictEqual(selectForm(entry, "gerund"), "correr");
+  assert.strictEqual(selectForm({ translation: "correr" }, "past"), "correr");
+});
+
+test("the swap puts the inflected form on the page", () => {
+  const { text } = swap("She was running and he walked.", {
+    be: { translation: "ser", pos: "verb", forms: { past: "era", gerund: "siendo" } },
+    run: { translation: "correr", pos: "verb", forms: { gerund: "corriendo" } },
+    walk: { translation: "caminar", pos: "verb", forms: { past: "caminó" } },
+  });
+
+  // The whole point of Phase 4: "she era corriendo", not "she ser correr".
+  assert.strictEqual(text, "She era corriendo and he caminó.");
+});
+
+test("a plural noun and a third-person verb are told apart by part of speech", () => {
+  const dict = {
+    wall: { translation: "pared", pos: "noun", forms: { plural: "paredes" } },
+    run: { translation: "correr", pos: "verb", forms: { third_person: "corre" } },
+  };
+
+  assert.strictEqual(swap("walls", dict).text, "paredes");
+  assert.strictEqual(swap("runs", dict).text, "corre");
+});
+
+test("an entry with no forms behaves exactly as it did before", () => {
+  const { text } = swap("She was running.", { be: "ser", run: "correr" });
+
+  assert.strictEqual(text, "She ser correr.");
+});
+
+test("a phrase inflects as a whole", () => {
+  // The head carries the tense and the tail is fixed, so the stored form is
+  // the whole phrase — the client never glues one onto the other.
+  const dict = {
+    "give up": { translation: "rendirse", pos: "verb", forms: { past: "se rindió" } },
+  };
+
+  assert.strictEqual(swap("He gave up.", dict, PHRASES).text, "He se rindió.");
+  assert.strictEqual(swap("He will give up.", dict, PHRASES).text, "He will rendirse.");
+});
+
+test("capitalization carries onto the chosen form", () => {
+  const dict = { be: { translation: "ser", pos: "verb", forms: { past: "era" } } };
+
+  assert.strictEqual(swap("Was it here?", dict).text, "Era it here?");
+});
+
+test("a swap part records the feature it matched on", () => {
+  const dict = { run: { translation: "correr", pos: "verb", forms: { past: "corrió" } } };
+  const { parts } = swap("He ran.", dict);
+  const swapped = parts.find((part) => part.type === "swap");
+
+  assert.strictEqual(swapped.feature, "past");
+  assert.strictEqual(swapped.display, "corrió");
+  // The entry itself is unchanged, so reporting the swap still names the entry
+  // the dictionary was keyed on rather than the form shown.
+  assert.strictEqual(swapped.entry.original, "run");
 });

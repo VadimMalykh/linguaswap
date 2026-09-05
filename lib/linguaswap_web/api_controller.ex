@@ -2,6 +2,7 @@ defmodule LinguaswapWeb.ApiController do
   use LinguaswapWeb, :controller
 
   alias Linguaswap.Vocabulary
+  alias Linguaswap.Vocabulary.Word
   alias Linguaswap.Accounts
 
   action_fallback LinguaswapWeb.FallbackController
@@ -49,6 +50,13 @@ defmodule LinguaswapWeb.ApiController do
           # as the longest entry it was actually sent, so a user whose pool
           # holds no phrases pays nothing for the phrase pass.
           token_count: word.token_count,
+          # Part of speech and inflected forms (Phase 4). The client detects
+          # the English feature on the page word — a past tense, a plural — and
+          # picks the matching form; `pos` is what separates the plural reading
+          # of an "-s" from the third-person one. Unreviewed forms are withheld,
+          # so the client falls back to the base translation for them.
+          pos: word.pos,
+          forms: Word.servable_forms(word),
           status: status,
           reveal_count: reveal_count
         }

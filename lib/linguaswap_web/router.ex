@@ -97,6 +97,7 @@ defmodule LinguaswapWeb.Router do
       pipe_through :browser
 
       live "/dashboard", DashboardLive
+      live "/dictionary/review", DictionaryReviewLive
     end
   end
 

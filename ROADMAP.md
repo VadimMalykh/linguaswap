@@ -17,15 +17,15 @@ before 5 keeps the runtime client dumb and fast (Q4 "precompute-first").
 | 1 — Adaptive word intake | Per-user active pool with a budget | ✅ done |
 | 2 — Lemmatization coverage | One entry matches every inflection | ✅ done |
 | 3 — Phrases and density control | Multi-word entries, swap-density cap | ✅ done |
-| 4 — LLM precompute pipeline | Generated translations, POS, inflected forms | ⬜ next |
-| 5 — Sentence-level swap | Whole-sentence translation above a threshold | ⬜ planned |
+| 4 — LLM precompute pipeline | Generated POS and inflected forms, with review | ✅ done |
+| 5 — Sentence-level swap | Whole-sentence translation above a threshold | ⬜ next |
 | 6 — Harvest and ecosystem | Auto-harvest from real pages, Anki export | ⬜ planned |
 
 Both test suites pass:
 
 ```bash
-docker compose exec -e MIX_ENV=test app mix test              # 211 tests
-docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 37 tests
+docker compose exec -e MIX_ENV=test app mix test              # 249 tests
+docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 50 tests
 ```
 
 ## What works today
@@ -47,14 +47,20 @@ The app is usable end to end as a local, single-machine build:
    are swapped, spread across it rather than bunched at the front, and when the
    cap forces a choice it keeps the words the user is still learning. This is
    what stops a word-dense page from turning into pidgin.
-5. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
+5. **The target side is inflected.** "She was running" comes out as "She era
+   corriendo", not "She ser correr": the client records *which* English rule
+   reached the entry — a past tense, a gerund, a plural — and picks the stored
+   target form for it, falling back to the dictionary form when there is none.
+   Those forms are generated with the Claude API at import time and are not
+   served until a human approves them at `/dictionary/review`.
+6. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
    one form settles every form of the same word on the page.
-6. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
+7. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
    promotes it to `trivial`, which frees budget and pulls the next frontier word
    into the pool automatically.
-7. **The dashboard** shows pool state (active / graduated / frontier), stats and
+8. **The dashboard** shows pool state (active / graduated / frontier), stats and
    page-visit history.
-8. **YouTube video titles** are translated too, through a separate path that
+9. **YouTube video titles** are translated too, through a separate path that
    copes with YouTube reusing the title node across navigations.
 
 ## What is not built yet
@@ -63,10 +69,10 @@ Ordered by how much it limits real use.
 
 | Gap | Why it matters | Addressed by |
 | --- | --- | --- |
-| **Base-form output only** | The target side is always the dictionary form: "she ser running", never "she era". Phrases inherit it: "give up" is "rendirse", never "se rindió". | Phase 4 |
-| **No LLM anywhere** | Translations, POS and inflected forms are all hand-authored TSV. | Phase 4 |
+| **No forms are generated yet** | Phase 4 built the pipeline and nothing has been run through it: every `words.forms` in the repository database is still empty, so the inflected output above is what the code does, not what a user sees today. Running `--generate` for en-es is a one-command job that costs money and needs reviewing. | A generation run |
+| **No LLM at page-load time** | Sentence-level swap, cache misses and novel inflections all need a runtime call; today the client only reads precomputed data. | Phase 5 |
 | **Phrase ranks are hand-placed** | The corpus list is unigrams, so it cannot say where "of course" belongs among single words. The 45 phrase ranks in `en-es.tsv` are estimates. | A bigram frequency source |
-| **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. | Phase 4, or a native reviewer |
+| **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. Phase 4 can now generate it, and the review queue is where a speaker would check it — but the reviewer is still the missing piece, not the pipeline. | A native reviewer |
 | **The density cap is per text node, not per rendered sentence** | Markup splits sentences: `<p>Some <b>bold</b> text.</p>` is three runs, and the cap applies to each. It bounds every fragment, which errs toward swapping too little. | Unscheduled |
 | **No UI for the word budget or the density** | Settable only through `PUT /api/v1/settings` under `settings.word_budget` and `settings.swap_density`. | Unscheduled |
 
@@ -148,16 +154,18 @@ Resolves: DESIGN dependency "per-language frequency_rank dataset", "dead fields"
   (frontier > due-for-review > trivial) decides what gets swapped — prevents the
   pidgin effect before sentence swap exists.
 
-## Phase 4 — LLM precompute pipeline (Q1-E, Q4-A) ⬜ next
+## Phase 4 — LLM precompute pipeline (Q1-E, Q4-A) ✅ done
 
-- `Linguaswap.LLM` (Req + Claude Messages API) generating, at word-add/import
-  time: translation, lemma, POS, and **target-side inflected forms** into `forms`.
-- Review workflow in the dashboard (approve / reject generated forms).
-- Rate limiting and cost caps (SPEC open question 4).
-- Client picks the right stored form from features the lemmatizer already detects
+- `Linguaswap.LLM` (Req + Claude Messages API, structured outputs) generating,
+  at import time: translation, lemma, POS, and **target-side inflected forms**
+  into `forms`.
+- Review workflow in the dashboard (approve / reject generated forms) at
+  `/dictionary/review`; nothing generated is served before approval.
+- Rate limiting and cost caps (SPEC open question 4) in `Linguaswap.LLM.Budget`.
+- Client picks the right stored form from features the lemmatizer now reports
   (tense, number) — natural output with a still-dumb runtime.
 
-## Phase 5 — Sentence-level swap (Q3-C, gated by Q3-D and Q3-E) ⬜ planned
+## Phase 5 — Sentence-level swap (Q3-C, gated by Q3-D and Q3-E) ⬜ next
 
 *The architectural shift: first runtime intelligence.*
 
@@ -196,7 +204,7 @@ Phase 1 ──> Phase 6 (pool is where harvested words land)
 # Appendix: where things stand
 
 Written so a session with no prior context can continue. Everything below is in
-the repository as of the Phase 2 work.
+the repository as of the Phase 4 work.
 
 ## Conventions worth knowing
 
@@ -537,29 +545,202 @@ The capped version keeps ten of the twenty-nine words in Spanish and spaces them
 through the line. `a lot of` is among what it gives up, which is the cap
 working: a three-token phrase costs three of the ten.
 
-## Picking up Phase 4
+## What Phase 4 built
 
-Three things about the Phase 3 code shape the work:
+The first LLM in the codebase, and the first time the target side of a swap is
+something other than the dictionary form.
 
-1. **`forms` is still empty and nothing reads it.** The client picks a
-   translation in exactly one place — `applyCase(first.core, entry.translation)`
-   in `buildParts`. That is where a stored inflected form has to be chosen
-   instead, from features the lemmatizer already knows it detected on the way
-   in. It does not currently *report* them: `candidates()` throws away which
-   rule fired, and Phase 4 needs that back.
+| Thing | Where |
+| --- | --- |
+| Provider-agnostic facade: config, budget, retry | `lib/linguaswap/llm.ex` |
+| The provider contract | `lib/linguaswap/llm/provider.ex` |
+| Claude Messages API (Req, structured outputs) — the default | `lib/linguaswap/llm/provider/anthropic.ex` |
+| Any `/v1/chat/completions` service (OpenAI, OpenRouter, Ollama) | `lib/linguaswap/llm/provider/openai_compatible.ex` |
+| Rate limit and cost cap in front of every call | `lib/linguaswap/llm/budget.ex` |
+| Generation, prompts, and the approve/reject workflow | `lib/linguaswap/dictionary.ex` |
+| `--generate` / `--generate-limit` | `lib/mix/tasks/linguaswap.import_words.ex` |
+| Review queue at `/dictionary/review` | `lib/linguaswap_web/live/dictionary_review_live.ex` |
+| `review_status`, form-shape and POS validation, `servable_forms/1` | `lib/linguaswap/vocabulary/word.ex` |
+| `pos` and `forms` served to the client | `lib/linguaswap_web/api_controller.ex` |
+| Feature-reporting `analyze/1`, `formKeysFor/2`, `selectForm/2` | `chrome-extension/lemmatizer.js` |
+| `words.review_status` + its index | `priv/repo/migrations/20260905120000_add_word_review_status.exs` |
 
-2. **Phrases make the target side harder, not easier.** "give up" → "rendirse"
-   is a base form the way "run" → "correr" is, but a phrase has a head that
-   inflects and a tail that does not, so the generated `forms` for a phrase are
-   not the same shape as for a word. Decide that before generating anything.
+### The four decisions
 
-3. **The importer is the natural place to hang generation.** It already parses,
-   upserts and prunes per language pair, and `--dry-run` exists. An LLM pass
-   that fills `translation`, `pos` and `forms` for rows that lack them fits
-   there rather than in a new task, and the review workflow the phase calls for
-   is then a dashboard view over `source: "llm"` rows.
+1. **A form key names the English feature, not the target grammar.** `forms` is
+   `%{"past" => "corrió", "gerund" => "corriendo"}` — keyed by what the client
+   can *detect*, which is what English did to the page word. Keying it by
+   Spanish grammar (preterite vs imperfect, say) would store data the runtime
+   has no way to choose between, and choosing is precisely what the runtime is
+   not allowed to do (Q4-A). The consequence is honest: every target language
+   gets the same seven slots, and a distinction English does not mark is a
+   distinction this design cannot serve.
 
-And one standing risk: **en-uz.** Phase 4 is the first phase that could
-plausibly fill it in, and it is also the phase most likely to fill it in wrongly
-with nobody to check. The gap table's answer — a native reviewer — has not
-changed.
+2. **A phrase's form is the whole phrase.** "give up" carries
+   `%{"past" => "se rindió"}`, not a head form the client would glue onto a
+   tail. Phase 3's note was right that a phrase has a head that inflects and a
+   fixed tail — but that split belongs at generation time, where a model can
+   see the whole phrase, rather than at runtime where it would be string
+   surgery in a content script. `resolvePhrase` reports the head's feature and
+   the stored form answers for the span.
+
+3. **`pos` is what resolves the "-s".** English spells the noun plural and the
+   third-person verb identically, and the surface gives no clue which is which.
+   So `analyze()` reports the deliberately vague feature `"s"`, and
+   `formKeysFor("s", pos)` reads it as `plural` on a noun and `third_person` on
+   a verb — the one place the ambiguity is resolved, and the reason `pos` is a
+   closed set rather than a free-form label.
+
+4. **Generated data is not served until someone approves it.** Rows land as
+   `pending` and `Word.servable_forms/1` sends `%{}` for them, so the client
+   falls back to the base translation and the page is exactly as good as it was
+   before. Rejecting clears the forms rather than hiding them, because a
+   rejected form is wrong and leaving it in the row invites a later change to
+   start serving it. An entry the generator had nothing to say about — a
+   pronoun, a preposition, no forms and no new translation — is approved on the
+   spot rather than filling the queue with rows whose only answer is "yes, fine".
+
+### What the generator will and will not touch
+
+It fills `pos` and `forms` always, and `target_translation` and `lemma` only
+when they are missing. A rebuilt `en-es.tsv` is hand-checked data, and replacing
+it with a model's second opinion is not a decision an import should make on its
+own — the existing translation is passed to the model instead, as context, so
+the forms it returns agree with it.
+
+`review_status IS NULL` is the marker for "never generated", so every seeded and
+imported row queues exactly once and a row that has been through the pipeline
+does not come back — whatever a human then decided about it. `Dictionary.requeue/1`
+is the way back in.
+
+### What it costs, and why that is not the interesting question
+
+Measured from the real prompts: a batch of 20 entries is ~3,200 characters of
+system prompt, entry list and schema (~850 input tokens), and comes back as
+~130 characters per entry (~850 output tokens for the batch). The whole
+dictionary — 539 en-es plus 98 en-uz — is 32 requests.
+
+| Model | Full run | Halved by the Batch API |
+| --- | --- | --- |
+| Claude Opus 5, `effort: :low` (the default) | ~$1.15 | ~$0.57 |
+| Claude Opus 5, default effort | ~$2.80 | ~$1.40 |
+| Claude Sonnet 5, `effort: :low` | ~$0.45 | ~$0.23 |
+| Claude Haiku 4.5 | ~$0.16 | ~$0.08 |
+| A small non-Anthropic model | ~$0.02–0.17 | half that |
+
+So the entire dictionary costs about a dollar at the top of the range, and the
+$5 default cap is three re-runs of headroom rather than a tight constraint.
+Two things follow:
+
+1. **Model choice here is a quality decision, not a cost one.** The gap between
+   the best and cheapest option is under $1.20 for the whole dictionary, spent
+   once. Picking a weaker model to save it, on data a human then has to review
+   entry by entry, trades an hour of review time for a dollar.
+2. **`effort` matters more than the model.** Thinking tokens bill as output and
+   are the largest line in the run — the difference between low and default
+   effort on Opus 5 is larger than the difference between Opus 5 and Sonnet 5.
+   Filling in dictionary forms is recall, not reasoning, so the config runs it
+   at `:low`.
+
+The cost conversation that actually matters belongs to Phase 5. A runtime
+sentence-translation path is per page view and per user rather than once per
+dictionary: at a thousand sentences a day and a 70% cache hit rate, that is
+roughly $8/user/month on Haiku and $15 on Sonnet. Precompute is a one-off
+dollar; runtime is a subscription.
+
+### The cost controls
+
+`Linguaswap.LLM.Budget` is the only path to a model, and it holds two limits:
+
+- **Requests per minute** (default 20), a sliding window. Exceeding it returns
+  `{:wait, ms}` and the client sleeps, because a batch job that has run out of
+  window should pace itself, not fail.
+- **A total cost cap** (default $5), for the life of the process — which for a
+  `mix` task is the run. Reaching it is an error, not a wait. Cost comes from
+  the usage the API reports, priced per model; a model with no price entry is
+  billed at zero, so a new model cannot silently spend the cap on a guess.
+
+Generation also walks the dictionary in frequency order and writes each batch as
+it lands, so a run stopped by the cap has bought the most useful words first and
+kept them.
+
+Two failures stop a run outright rather than repeating once per batch: a missing
+API key and an exhausted cap. Everything else — a bad batch, an entry the model
+left out — is recorded against the entries it affected and the run continues.
+
+### The provider seam
+
+`Linguaswap.LLM` owns what is the same whoever answers — configuration, the
+budget, the rate limit, the retry policy — and `Linguaswap.LLM.Provider` is the
+one-callback behaviour for what is not: the URL, the auth header, the request
+body, and where in the reply the JSON is. `Linguaswap.Dictionary` never learns
+whose model answered it.
+
+Two providers ship. `Provider.Anthropic` is the default and the one the prompts
+were written against. `Provider.OpenAICompatible` covers every
+`/v1/chat/completions` service in one adapter — OpenAI, OpenRouter, Together,
+Groq, a self-hosted vLLM, a local Ollama — because that request shape became the
+lingua franca; which one you get is decided by `:base_url` and `:model` alone. A
+local Ollama makes the whole pipeline free to re-run, which is what makes
+iterating on the prompts cheap.
+
+Each provider normalises its usage report to the same keys, so `Budget` prices
+any of them with one table and one piece of arithmetic. A model with no entry in
+that table is billed at zero rather than at a guess — the run continues, the cap
+just does not move, which is the right failure for a number nobody can verify.
+
+Two differences the seam does not paper over, both documented at the adapter:
+OpenAI's `strict: true` demands every property be required and this schema has
+optional ones on purpose, so strict mode is off by default and `Dictionary`
+re-validates what comes back; and there is no default `:model` for a compatible
+endpoint, because the right one depends entirely on which service `:base_url`
+points at and a guess would surface as a confusing 404.
+
+**What the seam does not abstract is the prompt.** `Dictionary.system_prompt/1`
+asks for lexicographic judgement in a particular voice and has only been checked
+against Claude. Switching providers is a config change; trusting the output of
+the new one is a review pass over the queue, which is what the queue is for.
+
+### Verified behaviour
+
+The pipeline is covered end to end against a stubbed API (`Req`'s `:plug`
+answers in-process, so the suite needs neither a key nor a connection): the
+request shape and structured-output schema, refusals, non-JSON replies, cost
+accounting, the cap, form sanitising by POS, the review transitions, and the
+queue in the LiveView. On the client, `analyze()` reports the right feature for
+every suffix rule and every irregular, and a test asserts the two irregular
+tables cannot drift apart.
+
+What is **not** verified is generation against the real API: no run has been
+made, so every `words.forms` in the repository database is still empty and the
+inflected output above is what the code does rather than what a user sees today.
+That is a `--generate` away, and it costs money, which is why it is a decision
+rather than a step.
+
+## Picking up Phase 5
+
+Three things about the Phase 4 code shape the work:
+
+1. **The LLM plumbing is reusable but not yet a runtime path.** `Linguaswap.LLM`
+   is synchronous, unstreamed and budgeted for a batch job. A sentence request
+   sits on a page load, so it needs a cache (Q4-C: sentence hash + language
+   pair), a timeout the client can survive, and a budget that is per user rather
+   than per run. The `Budget` process is the right shape for the second of those
+   and the wrong scope; it caps a node, not an account.
+
+2. **The client already segments sentences and knows their density.**
+   `markSentences` and `applyDensityCap` compute, per sentence, exactly the
+   number Phase 5 needs to threshold on: how much of it *would* be swapped. The
+   trigger is that number crossing a line, and the data is already there —
+   `applyDensityCap` currently throws away the matches it drops.
+
+3. **The interaction model is the open question, not the swap.** A
+   whole-sentence replacement has no per-word entry to hover, reveal or rate, so
+   `record_word_reveal` and the rating popup have nothing to attach to. DESIGN
+   flagged this as a follow-up and it is still unanswered; it is a product
+   decision, and it gates the phase more than the plumbing does.
+
+And the standing risk, unchanged: **en-uz**. Phase 4 can now generate it and the
+review queue is where it would be checked, but the gap table's answer is still a
+native reviewer, and generating 98 words of Uzbek that nobody can read would
+only move the problem into the database.

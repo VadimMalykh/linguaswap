@@ -86,6 +86,51 @@ defmodule LinguaswapWeb.ApiControllerTest do
       assert %{"token_count" => 1} = Enum.find(words, &(&1["original"] == "time"))
     end
 
+    test "serves approved forms so the client can inflect the target side", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "run",
+          target_translation: "correr",
+          language_pair: "en-es",
+          pos: "verb",
+          forms: %{"past" => "corrió"},
+          review_status: "approved"
+        })
+
+      Vocabulary.record_word_reveal(user.id, word.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => [served]} = json_response(conn, 200)
+
+      assert served["pos"] == "verb"
+      assert served["forms"] == %{"past" => "corrió"}
+    end
+
+    test "withholds forms nobody has reviewed yet", %{conn: conn, user: user} do
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "run",
+          target_translation: "correr",
+          language_pair: "en-es",
+          pos: "verb",
+          forms: %{"past" => "corrió"},
+          review_status: "pending"
+        })
+
+      Vocabulary.record_word_reveal(user.id, word.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
+      assert %{"words" => [served]} = json_response(conn, 200)
+
+      # A generated guess never reaches a page on its own; the client falls
+      # back to the base translation.
+      assert served["forms"] == %{}
+      assert served["translation"] == "correr"
+    end
+
     test "sends the default swap density along with the dictionary", %{conn: conn} do
       conn = get(conn, ~p"/api/v1/words?language_pair=en-es")
 

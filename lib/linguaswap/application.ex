@@ -12,8 +12,9 @@ defmodule Linguaswap.Application do
       Linguaswap.Repo,
       {DNSCluster, query: Application.get_env(:linguaswap, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Linguaswap.PubSub},
-      # Start a worker by calling: Linguaswap.Worker.start_link(arg)
-      # {Linguaswap.Worker, arg},
+      # The spending guard in front of the Claude API. Started with the app so
+      # a `mix` task and a dashboard-triggered generation share one allowance.
+      Linguaswap.LLM.Budget,
       # Start to serve requests, typically the last entry
       LinguaswapWeb.Endpoint
     ]

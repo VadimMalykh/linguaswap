@@ -258,6 +258,11 @@
             status: w.status,
             original: w.original,
             lemma: normalizeKey(w.lemma || w.original),
+            // Part of speech and target-side inflected forms (Phase 4). Both
+            // are optional: a server that sends neither, or an entry nobody has
+            // reviewed yet, falls back to the base translation.
+            pos: w.pos || null,
+            forms: w.forms && typeof w.forms === "object" ? w.forms : null,
           };
           entries.push(entry);
 

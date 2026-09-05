@@ -25,6 +25,23 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
     * `--source` - value stored in `words.source` (default: `import`)
     * `--dry-run` - parse and report without writing to the database
     * `--prune` - delete entries for this pair that the file no longer carries
+    * `--generate` - fill in part of speech and target-side inflected forms
+      with the LLM after importing
+    * `--generate-limit` - how many entries to generate for (default: all)
+
+  ## Generating the missing data
+
+  A TSV carries a translation and a rank; it does not carry the target's past
+  tense. `--generate` runs `Linguaswap.Dictionary.generate/2` over the entries
+  that have never been generated for, in frequency order:
+
+      mix linguaswap.import_words priv/data/en-es.tsv --generate
+
+  It needs `ANTHROPIC_API_KEY` in the environment and it spends money, so the
+  run is bounded twice over: `--generate-limit` caps how much is attempted, and
+  the configured cost cap stops the run when it has spent its allowance.
+  Generated forms land as `pending` and are not served until a human approves
+  them on the dashboard.
 
   ## Rebuilding a dictionary
 
@@ -40,6 +57,8 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
 
   use Mix.Task
 
+  alias Linguaswap.Dictionary
+  alias Linguaswap.LLM
   alias Linguaswap.Vocabulary
   alias Linguaswap.Vocabulary.Word
 
@@ -56,7 +75,9 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
           language_pair: :string,
           source: :string,
           dry_run: :boolean,
-          prune: :boolean
+          prune: :boolean,
+          generate: :boolean,
+          generate_limit: :integer
         ]
       )
 
@@ -92,8 +113,51 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
       end
 
       if opts[:prune], do: prune(language_pair, rows)
+      if opts[:generate], do: generate(language_pair, opts)
     end
   end
+
+  defp generate(language_pair, opts) do
+    unless LLM.configured?() do
+      Mix.raise("ANTHROPIC_API_KEY is not set, so there is nothing to generate with")
+    end
+
+    pending = length(Dictionary.entries_needing_generation(language_pair, opts[:generate_limit]))
+    Mix.shell().info("Generating forms for #{pending} #{language_pair} entries...")
+
+    result =
+      Dictionary.generate(language_pair,
+        limit: opts[:generate_limit],
+        on_batch: fn {done, total} -> Mix.shell().info("  #{done}/#{total}") end
+      )
+
+    Mix.shell().info("Generated #{result.generated} entries")
+
+    unless result.failed == [] do
+      Mix.shell().error("#{length(result.failed)} entries could not be generated:")
+
+      Enum.each(result.failed, fn {word, reason} ->
+        Mix.shell().error("  #{word}: #{describe_failure(reason)}")
+      end)
+    end
+
+    if result.stopped do
+      Mix.shell().error("Run stopped: #{describe_failure(result.stopped)}")
+    end
+
+    stats = Dictionary.review_stats(language_pair)
+
+    Mix.shell().info(
+      "#{stats.pending} entries are waiting for review on the dashboard " <>
+        "(#{stats.approved} approved, #{stats.rejected} rejected)"
+    )
+  end
+
+  defp describe_failure(%Ecto.Changeset{} = changeset), do: describe_errors(changeset)
+  defp describe_failure(:missing_api_key), do: "ANTHROPIC_API_KEY is not set"
+  defp describe_failure(:cost_cap_reached), do: "the run reached its cost cap"
+  defp describe_failure(:not_returned), do: "the model did not return this entry"
+  defp describe_failure(reason), do: inspect(reason)
 
   @doc """
   Parses TSV content into word attribute maps.

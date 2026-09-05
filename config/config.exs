@@ -35,6 +35,29 @@ config :linguaswap, LinguaswapWeb.Endpoint,
   pubsub_server: Linguaswap.PubSub,
   live_view: [signing_salt: "EZ2/Ba0z"]
 
+# The Claude API client used to generate dictionary entries (Phase 4).
+#
+# The key is read from the environment at runtime (config/runtime.exs), so a
+# build without one simply has no generation: `Linguaswap.LLM` refuses to make
+# a request rather than failing part-way through a dictionary.
+#
+# The two limits below are the cost controls. `requests_per_minute` paces a
+# generation run, and `cost_cap_usd` is the total a running node may spend —
+# for a `mix` task, that is the whole run.
+# `:provider` is the seam: any module implementing `Linguaswap.LLM.Provider`
+# can answer instead, and `Linguaswap.LLM.Provider.OpenAICompatible` covers
+# every `/v1/chat/completions` service (OpenAI, OpenRouter, a local Ollama).
+#
+# `:effort` is the cost dial. Thinking tokens bill as output and dominate a
+# generation run, and filling in dictionary forms is recall rather than
+# reasoning, so this work runs at the bottom of the range.
+config :linguaswap, Linguaswap.LLM,
+  provider: Linguaswap.LLM.Provider.Anthropic,
+  model: "claude-opus-5",
+  effort: :low,
+  requests_per_minute: 20,
+  cost_cap_usd: 5.0
+
 # Configure the mailer
 #
 # By default it uses the "Local" adapter which stores the emails

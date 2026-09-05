@@ -61,6 +61,25 @@ defmodule Mix.Tasks.Linguaswap.ImportWordsTest do
     end
   end
 
+  describe "--generate" do
+    test "refuses to start without an API key rather than failing part-way" do
+      previous = Application.get_env(:linguaswap, Linguaswap.LLM, [])
+      Application.put_env(:linguaswap, Linguaswap.LLM, api_key: nil)
+      on_exit(fn -> Application.put_env(:linguaswap, Linguaswap.LLM, previous) end)
+
+      path = Path.join(System.tmp_dir!(), "en-es-#{System.unique_integer([:positive])}.tsv")
+      File.write!(path, "run\tcorrer\t1\n")
+      on_exit(fn -> File.rm(path) end)
+
+      assert_raise Mix.Error, ~r/ANTHROPIC_API_KEY/, fn ->
+        ImportWords.run([path, "--language-pair", "en-es", "--generate"])
+      end
+
+      # The import itself still happened; only the generation pass was refused.
+      assert Vocabulary.get_word_by_original("run", "en-es")
+    end
+  end
+
   describe "shipped data files" do
     test "every seed file parses and imports cleanly" do
       for language_pair <- Vocabulary.language_pairs() do

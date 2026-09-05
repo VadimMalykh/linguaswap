@@ -27,6 +27,10 @@ services:
     environment:
       DATABASE_URL: postgresql://vadim:vadim@db:5432/linguaswap
       MIX_ENV: dev
+      # Dictionary generation (mix linguaswap.import_words --generate). Taken
+      # from your shell or from a gitignored .env file, which Compose reads on
+      # its own; empty when unset, and an unset key simply means no generation.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
 
 volumes:
   postgres_data:

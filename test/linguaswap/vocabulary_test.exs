@@ -38,6 +38,33 @@ defmodule Linguaswap.VocabularyTest do
       assert {:error, changeset} = Vocabulary.create_word(attrs)
       assert errors_on(changeset).original_word
     end
+
+    test "rejects generated data in a shape the client cannot use" do
+      attrs = %{original_word: "run", target_translation: "correr", language_pair: "en-es"}
+
+      # A key the client never asks for is dead weight, and a non-string value
+      # would reach the page as "[object Object]".
+      assert {:error, changeset} =
+               Vocabulary.create_word(Map.put(attrs, :forms, %{"future" => "correrá"}))
+
+      assert errors_on(changeset).forms
+
+      assert {:error, changeset} = Vocabulary.create_word(Map.put(attrs, :forms, %{"past" => 42}))
+      assert errors_on(changeset).forms
+
+      # Part of speech decides how an English "-s" is read, so a free-form
+      # label is no use.
+      assert {:error, changeset} = Vocabulary.create_word(Map.put(attrs, :pos, "v."))
+      assert errors_on(changeset).pos
+
+      assert {:ok, word} =
+               Vocabulary.create_word(
+                 %{attrs | original_word: "run2"}
+                 |> Map.merge(%{pos: "verb", forms: %{"past" => "corrió"}})
+               )
+
+      assert word.forms == %{"past" => "corrió"}
+    end
   end
 
   describe "get_or_create_word!/3" do

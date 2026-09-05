@@ -43,3 +43,8 @@ config :phoenix_live_view,
 # Sort query params output of verified routes for robust url comparisons
 config :phoenix,
   sort_verified_routes_query_params: true
+
+# No API key in test: `Linguaswap.LLM` refuses to build a request without one,
+# so a test that forgets to stub the client fails loudly instead of reaching
+# the network. Tests that do exercise the client set `:plug` themselves.
+config :linguaswap, Linguaswap.LLM, api_key: nil, cost_cap_usd: 100.0

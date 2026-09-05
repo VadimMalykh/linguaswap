@@ -23,6 +23,24 @@ end
 config :linguaswap, LinguaswapWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 
+# Dictionary generation reaches the Claude API with this key. It is read in dev
+# and prod alike because generation is a `mix` task as often as it is a server
+# feature; with the variable unset the client is simply disabled.
+#
+# Test is excluded on purpose. This file is loaded after `config/test.exs`, so
+# without the guard a developer with `ANTHROPIC_API_KEY` exported would have a
+# test suite that spends money.
+if config_env() != :test do
+  config :linguaswap, Linguaswap.LLM,
+    api_key: System.get_env("ANTHROPIC_API_KEY"),
+    model: System.get_env("ANTHROPIC_MODEL", "claude-opus-5")
+
+  case Float.parse(System.get_env("LINGUASWAP_LLM_COST_CAP_USD", "")) do
+    {cap, _} -> config :linguaswap, Linguaswap.LLM, cost_cap_usd: cap
+    :error -> :ok
+  end
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||

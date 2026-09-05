@@ -35,3 +35,7 @@ linguaswap-*.tar
 npm-debug.log
 /assets/node_modules/
 
+
+# Local secrets. Docker Compose reads this file automatically for variable
+# interpolation, which is how ANTHROPIC_API_KEY reaches the app container.
+/.env

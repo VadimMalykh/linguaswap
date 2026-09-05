@@ -57,6 +57,78 @@
     farther: "far", farthest: "far", further: "far", furthest: "far",
   };
 
+  // What each irregular form *is*, so the swap can pick the matching target
+  // form instead of the base translation (Phase 4). The suffix rules below
+  // know this by construction — a word that lost an "-ing" is a gerund — but
+  // an irregular carries no evidence of its own, so it is recorded here.
+  //
+  // The two tables are kept separate rather than merged into one map of
+  // objects because `priv/data/build_dictionary.py` parses IRREGULAR out of
+  // this file to fold a frequency list onto lemmas, and because a flat
+  // word -> base map is easier to read than a nested one. A test asserts every
+  // irregular has a feature, which is what keeps them in step.
+  //
+  // Forms with no target-side equivalent to choose ("am", "are") are `base`:
+  // the entry's own translation is the right answer for them.
+  const IRREGULAR_FEATURES = {
+    am: "base", is: "third_person", are: "base", was: "past", were: "past",
+    been: "past_participle", being: "gerund",
+    has: "third_person", had: "past", having: "gerund",
+    does: "third_person", did: "past", done: "past_participle", doing: "gerund",
+    goes: "third_person", went: "past", gone: "past_participle", going: "gerund",
+    says: "third_person", said: "past",
+    made: "past", took: "past", taken: "past_participle", came: "past",
+    saw: "past", seen: "past_participle", knew: "past", known: "past_participle",
+    got: "past", gotten: "past_participle", gave: "past", given: "past_participle",
+    found: "past", thought: "past", told: "past",
+    became: "past", left: "past", felt: "past",
+    brought: "past", began: "past", begun: "past_participle",
+    kept: "past", held: "past", wrote: "past", written: "past_participle",
+    stood: "past", heard: "past", meant: "past", met: "past",
+    ran: "past", paid: "past", sat: "past", spoke: "past", spoken: "past_participle",
+    led: "past", grew: "past", grown: "past_participle", lost: "past",
+    fell: "past", fallen: "past_participle", sent: "past", built: "past",
+    understood: "past", drew: "past", drawn: "past_participle",
+    broke: "past", broken: "past_participle", spent: "past",
+    rose: "past", risen: "past_participle", drove: "past", driven: "past_participle",
+    bought: "past", wore: "past", worn: "past_participle",
+    chose: "past", chosen: "past_participle", ate: "past", eaten: "past_participle",
+    taught: "past", caught: "past", fought: "past",
+    threw: "past", thrown: "past_participle", sold: "past", won: "past",
+    forgot: "past", forgotten: "past_participle", slept: "past",
+    sang: "past", sung: "past_participle", drank: "past", drunk: "past_participle",
+    swam: "past", swum: "past_participle", woke: "past", woken: "past_participle",
+    sought: "past", lay: "past", laid: "past",
+
+    children: "plural", men: "plural", women: "plural",
+    feet: "plural", teeth: "plural", geese: "plural", mice: "plural",
+    lives: "plural", wives: "plural", knives: "plural", leaves: "plural",
+    halves: "plural", wolves: "plural", shelves: "plural", selves: "plural",
+    thieves: "plural",
+
+    better: "comparative", best: "superlative",
+    worse: "comparative", worst: "superlative",
+    farther: "comparative", farthest: "superlative",
+    further: "comparative", furthest: "superlative",
+  };
+
+  // Which stored form answers a detected feature, and what to fall back to
+  // when the dictionary does not carry it. An English "-s" is deliberately
+  // absent: it is either a plural or a third-person verb, and only the entry's
+  // part of speech says which, so `formKeyFor` resolves it separately.
+  const FORM_KEYS = {
+    plural: ["plural"],
+    third_person: ["third_person"],
+    // A past participle usually reads acceptably as a simple past when the
+    // dictionary has no separate entry for it, and "he has broken" with the
+    // past form beats "he has break" with the base one.
+    past_participle: ["past_participle", "past"],
+    past: ["past"],
+    gerund: ["gerund"],
+    comparative: ["comparative"],
+    superlative: ["superlative"],
+  };
+
   // Words whose ending only looks inflected. Stripping it would produce a
   // different, usually much more common dictionary word ("as" -> "a"), and a
   // wrong swap is worse than a missed one.
@@ -113,59 +185,76 @@
     return last === prev && !isVowel(last) && /[a-z]/.test(last);
   }
 
-  // Every base form worth trying for a surface word, most likely first. The
-  // caller walks the list against the dictionary and takes the first hit, so
-  // extra candidates are harmless as long as they are not themselves common
-  // words with a different meaning.
-  function candidates(surface) {
+  // Every base form worth trying for a surface word, most likely first, each
+  // with the English feature the rule that produced it detected. The caller
+  // walks the list against the dictionary and takes the first hit, so extra
+  // candidates are harmless as long as they are not themselves common words
+  // with a different meaning.
+  //
+  // The feature is what Phase 4 added: knowing that "walked" reached "walk" by
+  // losing an "-ed" is what lets the swap put the target's past tense on the
+  // page instead of its dictionary form. `"s"` is left deliberately vague —
+  // English spells the noun plural and the third-person verb the same way, and
+  // only the dictionary entry's part of speech can tell them apart.
+  function analyze(surface) {
     if (!surface) return [];
 
     const word = String(surface).toLowerCase();
     const out = [];
+    const seen = new Set();
 
-    function add(candidate) {
+    function push(base, feature) {
+      if (!base || seen.has(base)) return;
+      seen.add(base);
+      out.push({ base, feature });
+    }
+
+    function add(candidate, feature) {
       if (!candidate || candidate.length < MIN_LENGTH) return;
       if (candidate === word) return;
-      if (!out.includes(candidate)) out.push(candidate);
+      push(candidate, feature);
     }
 
     // The surface form itself always wins: dictionary entries are stored by
-    // their own spelling, and an exact match needs no guessing.
-    out.push(word);
+    // their own spelling, and an exact match needs no guessing. Matching an
+    // entry outright means no inflection was stripped, so no form is chosen.
+    push(word, "base");
 
     if (Object.prototype.hasOwnProperty.call(IRREGULAR, word)) {
-      const base = IRREGULAR[word];
-      if (!out.includes(base)) out.push(base);
+      push(IRREGULAR[word], IRREGULAR_FEATURES[word] || "base");
       return out;
     }
 
     if (NO_SUFFIX_RULES.has(word) || word.length < 4) return out;
 
-    // Plurals and third-person singular.
+    // Plurals and third-person singular. Both are "-s" in English; `pos`
+    // decides which of the two stored forms answers it.
     if (word.endsWith("ies") && word.length >= 5) {
-      add(word.slice(0, -3) + "y");
+      add(word.slice(0, -3) + "y", "s");
     }
     if (/(sses|shes|ches|xes|zes)$/.test(word)) {
-      add(word.slice(0, -2));
+      add(word.slice(0, -2), "s");
     }
     if (word.endsWith("es") && word.length >= 5) {
-      add(word.slice(0, -1));
-      add(word.slice(0, -2));
+      add(word.slice(0, -1), "s");
+      add(word.slice(0, -2), "s");
     }
     if (word.endsWith("s") && !/(ss|us|is)$/.test(word)) {
-      add(word.slice(0, -1));
+      add(word.slice(0, -1), "s");
     }
 
-    // Past tense and past participle.
+    // Past tense and past participle. Regular verbs spell them the same, so
+    // the simple past is the feature reported and the participle only comes
+    // from the irregular table.
     if (word.endsWith("ied")) {
-      add(word.slice(0, -3) + "y");
+      add(word.slice(0, -3) + "y", "past");
     }
     if (word.endsWith("ed")) {
       const stem = word.slice(0, -2);
-      add(word.slice(0, -1));
+      add(word.slice(0, -1), "past");
       if (stem.length >= MIN_LENGTH) {
-        add(stem);
-        if (endsWithDoubledConsonant(stem)) add(stem.slice(0, -1));
+        add(stem, "past");
+        if (endsWithDoubledConsonant(stem)) add(stem.slice(0, -1), "past");
       }
     }
 
@@ -173,9 +262,9 @@
     if (word.endsWith("ing")) {
       const stem = word.slice(0, -3);
       if (stem.length >= MIN_LENGTH) {
-        add(stem);
-        add(stem + "e");
-        if (endsWithDoubledConsonant(stem)) add(stem.slice(0, -1));
+        add(stem, "gerund");
+        add(stem + "e", "gerund");
+        if (endsWithDoubledConsonant(stem)) add(stem.slice(0, -1), "gerund");
       }
     }
 
@@ -183,13 +272,51 @@
     // stripping is left out on purpose: it turns "corner" into "corn" and
     // "flower" into "flow".
     if (word.endsWith("ier")) {
-      add(word.slice(0, -3) + "y");
+      add(word.slice(0, -3) + "y", "comparative");
     }
     if (word.endsWith("iest")) {
-      add(word.slice(0, -4) + "y");
+      add(word.slice(0, -4) + "y", "superlative");
     }
 
     return out;
+  }
+
+  // The base forms of `analyze`, for callers that only want to look a word up.
+  function candidates(surface) {
+    return analyze(surface).map((candidate) => candidate.base);
+  }
+
+  // The stored form key a detected feature asks for, in fallback order, or an
+  // empty list when nothing should be substituted. This is the one place the
+  // English "-s" ambiguity is resolved, and it needs the entry's part of
+  // speech to do it: "runs" is a third-person verb, "walls" is a plural noun,
+  // and the surface gives no clue which.
+  function formKeysFor(feature, pos) {
+    if (feature === "s") {
+      if (pos === "noun") return FORM_KEYS.plural;
+      if (pos === "verb") return FORM_KEYS.third_person;
+      return [];
+    }
+
+    return FORM_KEYS[feature] || [];
+  }
+
+  // The target text that belongs in the page's slot: the stored form matching
+  // what English did to the word, or the entry's base translation when the
+  // dictionary has nothing better. Every swap goes through here, so an entry
+  // with no `forms` behaves exactly as it did before Phase 4.
+  function selectForm(entry, feature) {
+    if (!entry) return "";
+
+    const forms = entry.forms;
+    if (forms) {
+      for (const key of formKeysFor(feature, entry.pos)) {
+        const form = forms[key];
+        if (typeof form === "string" && form) return form;
+      }
+    }
+
+    return entry.translation;
   }
 
   // Splits a whitespace-delimited segment into the punctuation around it and
@@ -294,6 +421,10 @@
 
   // Resolves a run of `length` word tokens starting at `start`, or null.
   //
+  // A hit is `{entry, feature}`: the dictionary entry, and what English had
+  // done to the word that reached it, which decides which stored form the swap
+  // will use.
+  //
   // A phrase entry has to match an uninterrupted run of words: punctuation
   // between them ends it, so "a lot, of them" never reaches the "a lot of"
   // entry. Any name in the run disqualifies the whole phrase, for the same
@@ -324,9 +455,11 @@
       .map((core) => core.toLowerCase())
       .join(" ");
 
-    for (const candidate of candidates(cores[0])) {
-      const entry = lookup(candidate + " " + tail);
-      if (entry) return entry;
+    for (const candidate of analyze(cores[0])) {
+      const entry = lookup(candidate.base + " " + tail);
+      // The head's feature is the phrase's: "gave up" is a past tense, and the
+      // stored form for it is the whole phrase in the past.
+      if (entry) return { entry, feature: candidate.feature };
     }
 
     return null;
@@ -344,8 +477,8 @@
       let found = null;
 
       for (let length = limit; length >= 1 && !found; length--) {
-        const entry = matchAt(words, index, length, lookup);
-        if (entry) found = { start: index, length, entry };
+        const hit = matchAt(words, index, length, lookup);
+        if (hit) found = { start: index, length, entry: hit.entry, feature: hit.feature };
       }
 
       if (found) {
@@ -499,8 +632,11 @@
         core,
         suffix: last.suffix,
         entry: match.entry,
+        // What English did to the matched word, kept on the part so a caller
+        // can see why a particular form was chosen.
+        feature: match.feature,
         tokens: match.length,
-        display: applyCase(first.core, match.entry.translation),
+        display: applyCase(first.core, selectForm(match.entry, match.feature)),
       });
 
       matched = true;
@@ -518,7 +654,10 @@
   //
   // `lookup` takes a candidate base form and returns the dictionary entry for
   // it (anything with a `translation`), or null. Phrase entries are looked up
-  // by their words joined with single spaces, lowercased.
+  // by their words joined with single spaces, lowercased. An entry may also
+  // carry `pos` and a `forms` map of target-side inflections; when it does,
+  // the swap uses the form matching what English did to the page word rather
+  // than the base translation.
   //
   // Options:
   //
@@ -558,9 +697,9 @@
   }
 
   function resolve(core, lookup) {
-    for (const candidate of candidates(core)) {
-      const entry = lookup(candidate);
-      if (entry) return entry;
+    for (const candidate of analyze(core)) {
+      const entry = lookup(candidate.base);
+      if (entry) return { entry, feature: candidate.feature };
     }
     return null;
   }
@@ -574,7 +713,10 @@
   }
 
   return {
+    analyze,
     candidates,
+    formKeysFor,
+    selectForm,
     splitToken,
     applyCase,
     isProperNoun,
@@ -583,6 +725,7 @@
     renderParts,
     DEFAULT_MAX_DENSITY,
     IRREGULAR,
+    IRREGULAR_FEATURES,
     BRANDS,
   };
 });
