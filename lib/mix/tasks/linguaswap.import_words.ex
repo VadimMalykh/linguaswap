@@ -28,6 +28,8 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
     * `--generate` - fill in part of speech and target-side inflected forms
       with the LLM after importing
     * `--generate-limit` - how many entries to generate for (default: all)
+    * `--verify` - run the verification chain over what was generated, which
+      approves what it can justify and leaves the rest for a human
 
   ## Generating the missing data
 
@@ -42,6 +44,19 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
   the configured cost cap stops the run when it has spent its allowance.
   Generated forms land as `pending` and are not served until a human approves
   them on the dashboard.
+
+  ## Checking what was generated
+
+  Generated data is not served until it has been checked. `--verify` runs
+  `Linguaswap.Verification.verify/2` over the entries that came out of
+  generation:
+
+      mix linguaswap.import_words priv/data/en-es.tsv --generate --verify
+
+  The first three tiers are local — a paradigm file, a closed rule, a frequency
+  list — and cost nothing, so verification is worth running even on a machine
+  with no API key. Only what they could not settle reaches the round trip, which
+  does spend.
 
   ## Rebuilding a dictionary
 
@@ -59,6 +74,7 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
 
   alias Linguaswap.Dictionary
   alias Linguaswap.LLM
+  alias Linguaswap.Verification
   alias Linguaswap.Vocabulary
   alias Linguaswap.Vocabulary.Word
 
@@ -77,7 +93,8 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
           dry_run: :boolean,
           prune: :boolean,
           generate: :boolean,
-          generate_limit: :integer
+          generate_limit: :integer,
+          verify: :boolean
         ]
       )
 
@@ -114,6 +131,7 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
 
       if opts[:prune], do: prune(language_pair, rows)
       if opts[:generate], do: generate(language_pair, opts)
+      if opts[:verify], do: verify(language_pair)
     end
   end
 
@@ -151,6 +169,49 @@ defmodule Mix.Tasks.Linguaswap.ImportWords do
       "#{stats.pending} entries are waiting for review on the dashboard " <>
         "(#{stats.approved} approved, #{stats.rejected} rejected)"
     )
+  end
+
+  defp verify(language_pair) do
+    report_untranslated(language_pair)
+
+    pending = length(Verification.entries_needing_verification(language_pair))
+    Mix.shell().info("Verifying #{pending} #{language_pair} entries...")
+
+    result =
+      Verification.verify(language_pair,
+        on_batch: fn {done, total} -> Mix.shell().info("  #{done}/#{total}") end
+      )
+
+    Mix.shell().info(
+      "Approved #{result.approved} from evidence; #{result.queued} went to the review queue"
+    )
+
+    unless result.dropped == [] do
+      Mix.shell().info("#{length(result.dropped)} forms were contradicted and dropped:")
+
+      Enum.each(result.dropped, fn {word, field} ->
+        Mix.shell().info("  #{word}: #{field}")
+      end)
+    end
+
+    if result.stopped, do: Mix.shell().error("Run stopped: #{describe_failure(result.stopped)}")
+  end
+
+  # Verifying an inflected form on top of a translation that was never made is
+  # polishing the wrong layer, so this is said before the numbers rather than
+  # after them.
+  defp report_untranslated(language_pair) do
+    case Verification.untranslated_rows(language_pair) do
+      [] ->
+        :ok
+
+      rows ->
+        Mix.shell().info(
+          "#{length(rows)} #{language_pair} rows repeat the English in the target column " <>
+            "(#{Enum.map_join(Enum.take(rows, 10), ", ", & &1.original_word)}). " <>
+            "Some of these are right; the rest were never translated."
+        )
+    end
   end
 
   defp describe_failure(%Ecto.Changeset{} = changeset), do: describe_errors(changeset)

@@ -35,6 +35,24 @@
   font-style: italic;
 }
 
+/* Pinyin, shown while the word is revealed.
+ *
+ * A pseudo-element rather than a child node on purpose: the reveal works by
+ * assigning `textContent`, which would wipe any element inside the span, and
+ * `::after` content survives that untouched. It also keeps the pronunciation
+ * out of the page's text for anything that reads the DOM — a selection, a
+ * find-in-page — which is right for an annotation nobody typed.
+ *
+ * Only Chinese entries carry the attribute; a Spanish swap never matches this
+ * rule, so the reveal behaves exactly as it did before. */
+.linguaswap-word[data-pronunciation].ls-revealed::after {
+  content: " " attr(data-pronunciation);
+  font-style: normal;
+  font-size: 0.85em;
+  opacity: 0.7;
+  margin-left: 0.3em;
+}
+
 .linguaswap-rating-popup {
   position: absolute;
   z-index: 2147483647;

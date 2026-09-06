@@ -4,7 +4,7 @@ A Chrome extension that helps you learn a new language by gradually replacing wo
 
 ## Status
 
-Phases 0–4 of [ROADMAP.md](ROADMAP.md) are built and tested; **Phase 5
+Phases 0–4.6 of [ROADMAP.md](ROADMAP.md) are built and tested; **Phase 5
 (sentence-level swap) is next.**
 
 Working today: sign-in, a per-user pool of words in flight (default 50, refilled
@@ -19,19 +19,32 @@ The target side is inflected rather than always the dictionary form: "she was
 running" comes out as "she era corriendo", because the client tells the server
 *which* inflection it found and picks the matching stored form. Those forms are
 generated with the Claude API at import time, and nothing generated is shown on
-a page until a human approves it on the dashboard.
+a page until it has been checked.
+
+**Checked by machine, not by a reader.** Per-entry approval assumed someone who
+reads the target language, and this project does not have one — so it was a
+rubber stamp for Spanish, impossible for Uzbek, and it capped the dictionary at
+whatever a human could face reading. A chain of verifiers now sits in front of
+the queue: a morphological database matched by containment, a small closed
+per-language rule, a corpus attestation list, and an analysis of the generated
+surface with the answer hidden. Each returns confirmed, contradicted or
+*unknown*, a per-language confidence floor decides which tier is strong enough
+to approve, and only what the chain cannot settle reaches a human. On the
+Spanish entries generated so far the local tiers settle every claim, at no cost
+and with no API key.
+
+Three pairs: **Spanish** (539 entries in corpus frequency order, 45 of them
+phrases), **Uzbek** (still the original 98-word seed, and the pair no
+verification tier has data for), and **Chinese**, which ships the English side
+of the dictionary with an empty target column and has the generator supply the
+Chinese and its pinyin — shown on reveal, because a reader who meets 跑 has no
+way to sound it out.
 
 Not yet: whole-sentence translation, and any LLM call at page-load time — the
-runtime is still a dumb, fast client over precomputed data. The Spanish
-dictionary holds 539 entries in corpus frequency order, 45 of them phrases;
-**Uzbek is still the original 98-word seed**.
-
-**The per-entry approval step is being replaced.** It assumes a reviewer who
-reads the target language, and it caps the dictionary at whatever a human can
-face reading — which is why it stopped near 500. Phase 4.5 puts a chain of
-automated verifiers in front of the queue (paradigm lookup, corpus attestation,
-round-trip analysis, cross-model consensus) and leaves the human only the
-residue those cannot settle. ROADMAP.md has the design and the full gap list.
+runtime is still a dumb, fast client over precomputed data. Most of the
+dictionary is also still ungenerated, which is now a cost (about $1.70 for
+everything) rather than a blocker. ROADMAP.md has the design and the full gap
+list.
 
 ## Prerequisites
 
@@ -73,6 +86,13 @@ Spanish side of a swap is the base form until this is run. It calls the Claude
 API. Measured cost: **$0.03 per 20 entries**, so about **$0.80 for the whole
 539-entry Spanish dictionary**.
 
+The Chinese dictionary ships with no translations at all — `priv/data/en-zh.tsv`
+is the English side with an empty target column, because nobody on this project
+reads Chinese and a machine-translated file that looks hand-checked is worse
+than an honest blank. Generation fills the Chinese and its pinyin, and until it
+has run, those 539 rows are placeholders that are deliberately kept out of every
+pool and out of the API.
+
 **1. Put your API key in `.env`** (gitignored; Compose reads it automatically):
 
 ```bash
@@ -90,7 +110,7 @@ shell over `.env`.
 Pick a language pair, choose how many entries, and the button tells you what it
 will cost before you press it. Progress is live, a run can be stopped after the
 batch it is in, and what it actually cost is reported when it finishes. Nothing
-generated is put on a page until you approve it in the queue below.
+generated is put on a page until it has been checked — see below.
 
 A run belongs to the server rather than to the page: closing the tab does not
 abandon it, and re-opening rejoins the run in progress.
@@ -119,6 +139,45 @@ Notes:
 - **A wrong key stops the run on the first request**, and so does a first batch
   that produces nothing — rather than failing once per batch for the whole
   dictionary.
+
+## Checking what was generated
+
+Generated data is approved from evidence rather than by a reader. Press
+**Verify** on the same page, or add `--verify` to an import:
+
+```bash
+docker compose exec app mix linguaswap.import_words priv/data/en-es.tsv --generate --verify
+```
+
+Each stored form, and each translation the generator had to invent, becomes a
+claim, and each claim goes to a chain of verifiers strongest first:
+
+| Tier | What it checks | Where its data comes from |
+| --- | --- | --- |
+| 1 | Is the surface in that lemma's paradigm, under a feature bundle we accept? | UniMorph, filtered into `priv/verification/` |
+| 2 | Does a small closed rule settle it? (Spanish plurals, comparatives) | Code |
+| 3 | Does the surface occur in the language at all? | `hermitdave/FrequencyWords`, filtered into `priv/verification/` |
+| 4 | Analysed cold, with the answer hidden, does it come back to what was asked for? | The Claude API |
+
+Every verifier returns **confirmed**, **contradicted** or **unknown**, and
+`unknown` is the ordinary answer — a verifier with no data passes the claim
+down the chain rather than rejecting it. An entry is approved when every claim
+is confirmed by evidence at or above the language's **confidence floor**:
+Spanish approves at tier 3, Chinese at tier 4 (it has no morphology to check,
+only a translation), and Uzbek at tier 2, which given that no tier has any
+Uzbek data means en-uz approves nothing and says so. A form a tier 1 or 2 *fact*
+contradicts is dropped, which puts the entry back to serving its base
+translation for that slot.
+
+Tiers 1 to 3 are local files and cost nothing, so verification is worth running
+with no API key configured at all. Only what they cannot settle reaches tier 4,
+which does spend.
+
+The data files are checked in. To rebuild them:
+
+```bash
+python3 priv/data/build_verification_data.py --all
+```
 
 The default model is **Claude Opus 4.8**, not Opus 5: Opus 5's safety
 classifiers decline this workload outright (see `config/config.exs`). To use a
@@ -173,6 +232,12 @@ docker compose exec app iex -S mix phx.server
   `Linguaswap.Dictionary` owns generation and the approve/reject workflow.
   A dashboard page at `/dictionary/review` drives generation and review together.
   Measured cost: $0.03 per 20 entries on Claude Opus 4.8 — see ROADMAP.md
+- **Verification:** `Linguaswap.Verification` decides what a generated entry is
+  allowed to claim, from evidence rather than from a reader. Four verifiers
+  behind one three-valued contract (`:confirmed | :contradicted | :unknown`),
+  ordered strongest first, with the per-language feature maps and confidence
+  floors declared in `Linguaswap.Languages` and the data files in
+  `priv/verification/`. Only the last tier costs anything
 
 ## Learn more
 

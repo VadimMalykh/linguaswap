@@ -94,5 +94,40 @@ defmodule Mix.Tasks.Linguaswap.ImportWordsTest do
         end
       end
     end
+
+    # en-zh ships the English side only, with the target column empty, and the
+    # generator fills it in. Asserting the shape here is what stops a later
+    # change from "fixing" the file by machine-translating a column into it —
+    # which is how en-uz ended up with rows like `the -> the`.
+    test "en-zh ships an untranslated English side, and it imports as placeholders" do
+      rows =
+        Path.join(["priv", "data", "en-zh.tsv"])
+        |> File.read!()
+        |> ImportWords.parse("en-zh", "seed")
+
+      assert length(rows) > 500
+      assert Enum.all?(rows, &(&1.target_translation == ""))
+
+      {:ok, word} = Vocabulary.upsert_word(hd(rows))
+      assert word.target_translation == nil
+      refute Linguaswap.Vocabulary.Word.servable?(word)
+    end
+
+    # Every other pair carries a translation for every row; a blank one there
+    # would be a row silently dropped from a user's pool rather than an
+    # advertised placeholder.
+    test "every other seed file translates every row" do
+      for language_pair <- Vocabulary.language_pairs(), language_pair != "en-zh" do
+        rows =
+          Path.join(["priv", "data", "#{language_pair}.tsv"])
+          |> File.read!()
+          |> ImportWords.parse(language_pair, "seed")
+
+        untranslated = Enum.filter(rows, &(String.trim(&1.target_translation) == ""))
+
+        assert untranslated == [],
+               "#{language_pair} has untranslated rows: #{inspect(untranslated)}"
+      end
+    end
   end
 end

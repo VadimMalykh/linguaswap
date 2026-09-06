@@ -655,6 +655,16 @@
     span.dataset.translation = part.display;
     span.dataset.status = wordData.status;
 
+    // Pinyin, for a target script the reader cannot sound out. Set only when
+    // the dictionary sent one, so the CSS rule that reveals it never matches a
+    // Spanish or Uzbek swap. It belongs to the entry's translation rather than
+    // to an inflected form, which is safe because the languages that need a
+    // pronunciation are the ones that do not inflect — a Chinese entry has no
+    // `forms`, so `part.display` is always the translation this describes.
+    if (wordData.pronunciation) {
+      span.dataset.pronunciation = wordData.pronunciation;
+    }
+
     span.textContent = part.display;
 
     if (wordData.status === "hard") {

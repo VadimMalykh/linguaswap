@@ -2,7 +2,7 @@ defmodule Linguaswap.Vocabulary.Word do
   use Ecto.Schema
   import Ecto.Changeset
 
-  @language_pairs ~w(en-es en-uz)
+  @language_pairs ~w(en-es en-uz en-zh)
 
   @review_statuses ~w(pending approved rejected)
 
@@ -66,6 +66,17 @@ defmodule Linguaswap.Vocabulary.Word do
     # e.g. %{"past" => "corrió", "gerund" => "corriendo"}.
     field :forms, :map, default: %{}
 
+    # Romanised pronunciation, for a target script a learner cannot sound out:
+    # pinyin for Chinese, `nil` for a Latin-script target where the written
+    # form is already the pronunciation guide.
+    field :pronunciation, :string
+
+    # Evidence gathered by the verification chain (Phase 4.5): a per-field
+    # verdict, the verifier that produced it and the tier it sits at. This is
+    # what an auto-approval is justified by, so it is stored rather than logged.
+    field :verification, :map, default: %{}
+    field :verified_at, :utc_datetime
+
     field :source, :string, default: "seed"
 
     # `pending` / `approved` / `rejected` for generated entries, `nil` for
@@ -76,6 +87,37 @@ defmodule Linguaswap.Vocabulary.Word do
 
     timestamps(type: :utc_datetime)
   end
+
+  @doc """
+  Whether the entry may be put in front of a user.
+
+  Two ways an entry fails this, and they arrived at different times.
+
+  **It has no target side yet.** An entry may sit in the dictionary without a
+  translation: `en-zh.tsv` carries the English side of the dictionary with an
+  empty target column and the generator fills it in, because there was no
+  Chinese to hand-author from. Such a row is real — it holds the frequency rank
+  that decides *when* the word is taught — but it has nothing to put on a page.
+
+  **Its translation is a model's and has not been checked.** Phase 4 withheld
+  generated *forms* until they were approved and served the translation
+  regardless, which was sound while every translation came from a hand-authored
+  TSV. It stopped being sound the moment the generator started supplying
+  translations too: an unchecked gloss is exactly the thing that must not reach
+  a page, and it is a worse failure than an unchecked form, which at least falls
+  back to something a human wrote. So a translation the generator invented
+  (`source` is `llm`) is served only once `Linguaswap.Verification` or a reader
+  has approved it, and until then the whole entry stays out of the pool rather
+  than appearing with nothing to show.
+  """
+  def servable?(%__MODULE__{} = word) do
+    present?(word.target_translation) and
+      (word.source != "llm" or word.review_status == "approved")
+  end
+
+  def servable?(_word), do: false
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   @doc """
   The forms of an entry that may be sent to the client.
@@ -102,10 +144,14 @@ defmodule Linguaswap.Vocabulary.Word do
       :pos,
       :token_count,
       :forms,
+      :pronunciation,
+      :verification,
+      :verified_at,
       :source,
       :review_status
     ])
-    |> validate_required([:original_word, :target_translation, :language_pair])
+    |> validate_required([:original_word, :language_pair])
+    |> validate_translation()
     |> validate_inclusion(:language_pair, @language_pairs)
     |> validate_inclusion(:review_status, @review_statuses)
     |> validate_inclusion(:pos, @parts_of_speech)
@@ -115,6 +161,26 @@ defmodule Linguaswap.Vocabulary.Word do
     |> put_derived_token_count()
     |> validate_forms()
     |> unique_constraint([:original_word, :language_pair])
+  end
+
+  # A translation is required of every entry that has been through generation,
+  # and optional only before it: an untranslated row is a placeholder waiting
+  # for the generator, and once the generator has answered, a row still without
+  # one is a bug rather than a stub. Blank is stored as `nil` so the two spell
+  # the same thing everywhere downstream.
+  defp validate_translation(changeset) do
+    translation = get_field(changeset, :target_translation)
+
+    cond do
+      present?(translation) ->
+        changeset
+
+      is_nil(get_field(changeset, :review_status)) ->
+        put_change(changeset, :target_translation, nil)
+
+      true ->
+        add_error(changeset, :target_translation, "can't be blank")
+    end
   end
 
   # Generated data arrives from a model, so the shape is checked rather than

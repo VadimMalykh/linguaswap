@@ -57,6 +57,11 @@ defmodule LinguaswapWeb.ApiController do
           # so the client falls back to the base translation for them.
           pos: word.pos,
           forms: Word.servable_forms(word),
+          # Romanised pronunciation, for a target script the reader cannot sound
+          # out — pinyin for Chinese, `nil` for Spanish and Uzbek, whose written
+          # form is already the pronunciation guide. The client shows it beside
+          # the swap rather than instead of it.
+          pronunciation: word.pronunciation,
           status: status,
           reveal_count: reveal_count
         }

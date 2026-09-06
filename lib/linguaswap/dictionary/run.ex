@@ -1,6 +1,6 @@
 defmodule Linguaswap.Dictionary.Run do
   @moduledoc """
-  One generation run at a time, owned by the server rather than by a shell.
+  One dictionary job at a time, owned by the server rather than by a shell.
 
   Generation started life as a `mix` flag, which is a fine way to do a thing
   once and a poor way to do it repeatedly: adding a language, extending a word
@@ -26,12 +26,23 @@ defmodule Linguaswap.Dictionary.Run do
 
   Progress is broadcast on `"dictionary:run"`, so any number of viewers see the
   same run advance.
+
+  ## Two jobs, one server
+
+  It runs generation (`:generate`) and verification (`:verify`), and the reason
+  they share a process rather than getting one each is the "only one at a time"
+  property above. They are not independent: verification reads exactly the rows
+  generation writes, so a verify pass racing a generate pass over the same pair
+  would be checking a moving target, and both spend money against a budget
+  scoped to one run. One server means the second job waits, which is the honest
+  answer rather than an artificial restriction.
   """
 
   use GenServer
 
   alias Linguaswap.Dictionary
   alias Linguaswap.LLM.Budget
+  alias Linguaswap.Verification
   alias Phoenix.PubSub
 
   require Logger
@@ -45,12 +56,23 @@ defmodule Linguaswap.Dictionary.Run do
   # that figure is the one shown once it finishes.
   @estimated_cost_per_entry 0.0015
 
+  # Verification's per-entry figure is an upper bound rather than an estimate.
+  # Only the claims the local tiers could not settle reach the round trip, and
+  # they are analysed 15 surfaces to a request against generation's 20 — so for
+  # a pair with a paradigm file this is wrong by a wide margin in the cheap
+  # direction, and for a pair without one it is roughly right. Quoting the
+  # ceiling is the right way round for a number that appears next to a button
+  # that spends money.
+  @estimated_verification_cost_per_entry 0.001
+
   defstruct status: :idle,
+            job: :generate,
             language_pair: nil,
             total: 0,
             done: 0,
             generated: 0,
             failed: [],
+            result: %{},
             stopped: nil,
             started_at: nil,
             finished_at: nil,
@@ -65,12 +87,18 @@ defmodule Linguaswap.Dictionary.Run do
   end
 
   @doc """
-  Starts generating for a language pair.
+  Starts a job for a language pair.
 
-  Options are passed through to `Linguaswap.Dictionary.generate/2`; `:limit` is
-  the one a caller usually sets. Returns `{:error, :already_running}` rather
-  than starting a second run, and `{:error, :missing_api_key}` rather than
-  starting one that cannot work.
+  `:job` picks which one — `:generate` (the default) or `:verify` — and the
+  rest of the options are passed through to `Linguaswap.Dictionary.generate/2`
+  or `Linguaswap.Verification.verify/2`; `:limit` is the one a caller usually
+  sets. Returns `{:error, :already_running}` rather than starting a second run,
+  and `{:error, :missing_api_key}` rather than starting one that cannot work.
+
+  Verification may be started without an API key when the pair's chain has a
+  local tier to run: `en-es` gets real answers out of a paradigm file and a
+  frequency list with nothing configured at all, and refusing to start would be
+  refusing to do work that costs nothing.
   """
   # Written out rather than using two default arguments: `start(server \\ M,
   # pair, opts \\ [])` compiles, and then `start("en-es", limit: 20)` silently
@@ -116,13 +144,19 @@ defmodule Linguaswap.Dictionary.Run do
   end
 
   @doc """
-  Roughly what generating `count` entries will cost, in dollars.
+  Roughly what running a job over `count` entries will cost, in dollars.
 
   An estimate for a button label, not an accounting figure — the real number is
   in `status/0` once a run has finished.
   """
-  def estimate_cost(count) when is_integer(count) and count >= 0 do
+  def estimate_cost(count, job \\ :generate)
+
+  def estimate_cost(count, :generate) when is_integer(count) and count >= 0 do
     count * @estimated_cost_per_entry
+  end
+
+  def estimate_cost(count, :verify) when is_integer(count) and count >= 0 do
+    count * @estimated_verification_cost_per_entry
   end
 
   ## Server
@@ -136,7 +170,7 @@ defmodule Linguaswap.Dictionary.Run do
   end
 
   def handle_call({:start, language_pair, opts}, _from, state) do
-    if Linguaswap.LLM.configured?() do
+    if runnable?(language_pair, opts[:job] || :generate) do
       {:reply, :ok, begin_run(state, language_pair, opts)}
     else
       {:reply, {:error, :missing_api_key}, state}
@@ -169,8 +203,9 @@ defmodule Linguaswap.Dictionary.Run do
     state = %{
       state
       | status: :finished,
-        generated: result.generated,
-        failed: result.failed,
+        generated: Map.get(result, :generated, Map.get(result, :approved, 0)),
+        failed: Map.get(result, :failed, []),
+        result: result,
         stopped: result.stopped,
         finished_at: DateTime.utc_now(),
         spent_usd: spent,
@@ -186,7 +221,7 @@ defmodule Linguaswap.Dictionary.Run do
   # that shows a failure.
   def handle_info({:DOWN, _ref, :process, pid, reason}, %{task: pid} = state)
       when reason != :normal do
-    Logger.error("Dictionary generation crashed: #{inspect(reason)}")
+    Logger.error("Dictionary #{state.job} run crashed: #{inspect(reason)}")
 
     stop_budget(state)
 
@@ -205,6 +240,7 @@ defmodule Linguaswap.Dictionary.Run do
 
   defp begin_run(state, language_pair, opts) do
     owner = self()
+    job = opts[:job] || :generate
 
     {:ok, budget} =
       Budget.start_link(
@@ -212,14 +248,16 @@ defmodule Linguaswap.Dictionary.Run do
         config: Application.get_env(:linguaswap, Linguaswap.LLM, [])
       )
 
-    total = length(Dictionary.entries_needing_generation(language_pair, opts[:limit]))
+    total = length(pending(job, language_pair, opts[:limit]))
 
     {:ok, pid} =
       Task.start(fn ->
         result =
-          Dictionary.generate(
+          run(
+            job,
             language_pair,
             opts
+            |> Keyword.delete(:job)
             |> Keyword.put(:budget, budget)
             |> Keyword.put(:should_continue, fn -> GenServer.call(owner, :status).running? end)
             |> Keyword.put(:on_batch, fn {done, _total} -> send(owner, {:progress, done}) end)
@@ -233,11 +271,13 @@ defmodule Linguaswap.Dictionary.Run do
     broadcast(%{
       state
       | status: :running,
+        job: job,
         language_pair: language_pair,
         total: total,
         done: 0,
         generated: 0,
         failed: [],
+        result: %{},
         stopped: nil,
         started_at: DateTime.utc_now(),
         finished_at: nil,
@@ -245,6 +285,33 @@ defmodule Linguaswap.Dictionary.Run do
         budget: budget,
         task: pid
     })
+  end
+
+  defp run(:generate, language_pair, opts), do: Dictionary.generate(language_pair, opts)
+  defp run(:verify, language_pair, opts), do: Verification.verify(language_pair, opts)
+
+  @doc """
+  Entries a job would work on, so a caller can size and price it before asking.
+  """
+  def pending(job, language_pair, limit \\ nil)
+
+  def pending(:generate, language_pair, limit) do
+    Dictionary.entries_needing_generation(language_pair, limit)
+  end
+
+  def pending(:verify, language_pair, limit) do
+    Verification.entries_needing_verification(language_pair, limit)
+  end
+
+  # Generation cannot happen without a model. Verification can: for `en-es` the
+  # first three tiers are a paradigm file and a frequency list, and refusing to
+  # run them because no key is configured would be refusing free work.
+  defp runnable?(_language_pair, :generate), do: Linguaswap.LLM.configured?()
+
+  defp runnable?(language_pair, :verify) do
+    language_pair
+    |> Verification.availability()
+    |> Enum.any?(fn {_verifier, available?} -> available? end)
   end
 
   defp stop_budget(%{budget: nil}), do: :ok
@@ -260,11 +327,13 @@ defmodule Linguaswap.Dictionary.Run do
     %{
       status: state.status,
       running?: state.status == :running,
+      job: state.job,
       language_pair: state.language_pair,
       total: state.total,
       done: state.done,
       generated: state.generated,
       failed: state.failed,
+      result: state.result,
       stopped: state.stopped,
       started_at: state.started_at,
       finished_at: state.finished_at,

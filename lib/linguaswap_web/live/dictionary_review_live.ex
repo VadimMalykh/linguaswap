@@ -8,15 +8,18 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
   to go somewhere else to ask for more. It also puts the cost estimate directly
   above the button that spends the money.
 
-  Generated forms are not served until someone has looked at them, and this is
-  where they are looked at. One row per entry: the English word, its part of
-  speech, the translation it already had, and every target-side form the model
-  proposed, shown in a sentence-shaped way — "she was …" next to the past form
-  — because a form is only wrong in context.
+  Generated forms are not served until they have been checked, and there are two
+  ways that happens. `Linguaswap.Verification` runs a chain of evidence over
+  them and approves what it can justify; whatever it could not settle arrives
+  here. One row per entry: the English word, its part of speech, the translation
+  it already had, every target-side form the model proposed — shown in a
+  sentence-shaped way, "she was …" next to the past form, because a form is only
+  wrong in context — and what the chain found, so the reader knows why this row
+  in particular is in front of them.
 
   Approving serves the forms; rejecting clears them and keeps the entry out of
-  the next generation pass. Both are one click, because a reviewer working
-  through a frequency list is doing hundreds of them.
+  the next generation pass. Both are one click, because the residue is still
+  read one row at a time even when it is small.
   """
 
   use LinguaswapWeb, :live_view
@@ -25,6 +28,7 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
   alias Linguaswap.Dictionary.Run
   alias Linguaswap.LLM
   alias Linguaswap.Repo
+  alias Linguaswap.Verification
   alias Linguaswap.Vocabulary
   alias Linguaswap.Vocabulary.Word
 
@@ -61,6 +65,7 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
        configured?: LLM.configured?(),
        run: Run.status()
      )
+     |> load_chain()
      |> load_queue()}
   end
 
@@ -76,7 +81,7 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
 
   def handle_event("select-pair", %{"language_pair" => pair}, socket) do
     if pair in Vocabulary.language_pairs() do
-      {:noreply, socket |> assign(language_pair: pair) |> load_queue()}
+      {:noreply, socket |> assign(language_pair: pair) |> load_chain() |> load_queue()}
     else
       {:noreply, socket}
     end
@@ -89,23 +94,9 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
     end
   end
 
-  def handle_event("generate", _params, socket) do
-    case Run.start(socket.assigns.language_pair, limit: socket.assigns.count) do
-      :ok ->
-        {:noreply, assign(socket, run: Run.status())}
+  def handle_event("generate", _params, socket), do: {:noreply, start(socket, :generate)}
 
-      {:error, :already_running} ->
-        {:noreply, put_flash(socket, :error, "A run is already in progress")}
-
-      {:error, :missing_api_key} ->
-        {:noreply,
-         put_flash(
-           socket,
-           :error,
-           "No API key is configured, so there is nothing to generate with"
-         )}
-    end
-  end
+  def handle_event("verify", _params, socket), do: {:noreply, start(socket, :verify)}
 
   def handle_event("cancel", _params, socket) do
     Run.cancel()
@@ -119,6 +110,27 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
   def handle_event("reject", %{"id" => id}, socket) do
     {:noreply, review(socket, id, &Dictionary.reject/1, "Rejected")}
   end
+
+  defp start(socket, job) do
+    limit = if job == :generate, do: socket.assigns.count, else: nil
+
+    case Run.start(socket.assigns.language_pair, job: job, limit: limit) do
+      :ok ->
+        assign(socket, run: Run.status())
+
+      {:error, :already_running} ->
+        put_flash(socket, :error, "A run is already in progress")
+
+      {:error, :missing_api_key} ->
+        put_flash(socket, :error, missing_key_message(job))
+    end
+  end
+
+  defp missing_key_message(:generate),
+    do: "No API key is configured, so there is nothing to generate with"
+
+  defp missing_key_message(:verify),
+    do: "This pair has no verification data and no API key, so there is nothing to check against"
 
   # A reviewer only ever acts on a row that is in front of them, so the entry is
   # re-read scoped to the queue's own language pair rather than trusted from the
@@ -148,9 +160,24 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
     assign(socket,
       entries: Dictionary.entries_pending_review(language_pair, @page_size),
       stats: stats,
+      verification: Verification.stats(language_pair),
+      untranslated: Verification.untranslated_rows(language_pair),
       # Never offer to generate more than there is, so the estimate on the
       # button is the estimate for what will actually happen.
       queued: stats.ungenerated
+    )
+  end
+
+  # Which tiers can say anything about this pair. Shown next to the floor
+  # because a floor of 3 means nothing when tiers 1 to 3 have no data — which is
+  # exactly the case for en-uz, and is the thing a reader of this page would
+  # otherwise have to go and find out from a data directory.
+  defp load_chain(socket) do
+    language_pair = socket.assigns.language_pair
+
+    assign(socket,
+      chain: Verification.availability(language_pair),
+      floor: Linguaswap.Languages.confidence_floor(language_pair)
     )
   end
 
@@ -183,6 +210,46 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
   defp describe_stop(other), do: inspect(other)
 
   defp form_label(key), do: Map.get(@form_labels, key, key)
+
+  defp describe_job(:verify), do: "Verifying"
+  defp describe_job(_job), do: "Generating"
+
+  # The chain's own name for a tier, for the row that explains what ran.
+  defp tier_name(verifier), do: "#{verifier.tier()}. #{verifier.name()}"
+
+  # What the chain concluded about one entry, as the reader needs it: the
+  # per-field verdicts, worst first, so the reason this row is here is the first
+  # thing read.
+  defp evidence(%Word{verification: %{"claims" => claims}}) when is_map(claims) do
+    claims
+    |> Enum.map(fn {field, claim} -> Map.put(claim, "field", field) end)
+    |> Enum.sort_by(&verdict_order(&1["verdict"]))
+  end
+
+  defp evidence(_word), do: []
+
+  defp verdict_order("contradicted"), do: 0
+  defp verdict_order("unknown"), do: 1
+  defp verdict_order(_verdict), do: 2
+
+  defp verdict_class("contradicted"), do: "text-red-700 bg-red-50"
+  defp verdict_class("confirmed"), do: "text-emerald-700 bg-emerald-50"
+  defp verdict_class(_verdict), do: "text-gray-600 bg-gray-100"
+
+  # A verdict is only meaningful with the thing that produced it attached: a
+  # bare "unknown" reads as a failure, and "unknown — no tier had data" reads as
+  # what it is.
+  defp describe_verdict(%{"verdict" => "confirmed"} = claim),
+    do: "confirmed by #{claim["verifier"]} (tier #{claim["tier"]})"
+
+  defp describe_verdict(%{"verdict" => "contradicted"} = claim),
+    do: "contradicted by #{claim["verifier"]} (tier #{claim["tier"]})"
+
+  defp describe_verdict(%{"attested" => false}), do: "unknown, and not attested in the corpus"
+  defp describe_verdict(_claim), do: "unknown — no tier had data"
+
+  defp field_label("translation"), do: "translation"
+  defp field_label(field), do: form_label(field)
 
   # Stored in the order the reader thinks in rather than whatever order the map
   # happens to iterate in.
@@ -251,7 +318,7 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
           <div :if={@run.status == :running} class="space-y-3">
             <div class="flex items-baseline justify-between">
               <span class="text-gray-700">
-                Generating {@run.language_pair} — {@run.done} of {@run.total}
+                {describe_job(@run.job)} {@run.language_pair} — {@run.done} of {@run.total}
               </span>
               <button
                 phx-click="cancel"
@@ -309,14 +376,86 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
             :if={@run.status == :finished && @run.language_pair}
             class="mt-4 pt-4 border-t border-gray-100 text-sm text-gray-600"
           >
-            Last run: generated {@run.generated} {@run.language_pair} entries, cost {money(
-              @run.spent_usd
-            )}.
+            Last run: {describe_job(@run.job) |> String.downcase()} {@run.language_pair}, {@run.generated} entries {if @run.job ==
+                                                                                                                         :verify,
+                                                                                                                       do:
+                                                                                                                         "approved",
+                                                                                                                       else:
+                                                                                                                         "generated"},
+            cost {money(@run.spent_usd)}.
+            <span :if={@run.job == :verify && Map.get(@run.result, :queued, 0) > 0}>
+              {@run.result.queued} went to the queue.
+            </span>
             <span :if={@run.failed != []} class="text-amber-700">
               {length(@run.failed)} could not be generated.
             </span>
             <span :if={@run.stopped} class="text-amber-700">
               Run {describe_stop(@run.stopped)}.
+            </span>
+          </div>
+        </div>
+
+        <div class="bg-white text-gray-900 p-6 rounded-lg shadow-md mb-8">
+          <h2 class="text-xl font-semibold mb-1">Verify</h2>
+          <p class="text-sm text-gray-600 mb-4">
+            Generated data is checked against evidence — a paradigm database, a closed rule,
+            a frequency list, and an analysis of the form with the answer hidden — and approved
+            without a reader when the evidence is strong enough for this language.
+            Whatever is left comes here.
+          </p>
+
+          <div class="flex flex-wrap gap-x-6 gap-y-2 text-sm mb-4">
+            <span
+              :for={{verifier, available?} <- @chain}
+              class={if available?, do: "text-emerald-700", else: "text-gray-400 line-through"}
+            >
+              {tier_name(verifier)}
+            </span>
+            <span class="text-gray-500">
+              auto-approves at tier {@floor} or stronger
+            </span>
+          </div>
+
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+            <div>
+              <div class="text-xl font-bold text-emerald-600">{@verification.approved}</div>
+              <div class="text-gray-600 text-xs mt-1">Approved from evidence</div>
+            </div>
+            <div>
+              <div class="text-xl font-bold text-red-600">{@verification.contradicted}</div>
+              <div class="text-gray-600 text-xs mt-1">Contradicted</div>
+            </div>
+            <div>
+              <div class="text-xl font-bold text-amber-600">{@verification.unknown}</div>
+              <div class="text-gray-600 text-xs mt-1">No evidence either way</div>
+            </div>
+            <div>
+              <div class="text-xl font-bold text-gray-500">{@verification.unverified}</div>
+              <div class="text-gray-600 text-xs mt-1">Not checked yet</div>
+            </div>
+          </div>
+
+          <div
+            :if={@untranslated != []}
+            class="text-sm text-amber-800 bg-amber-50 p-3 rounded-lg mb-4"
+          >
+            <strong>{length(@untranslated)} rows repeat the English in the target column</strong>
+            — {Enum.map_join(Enum.take(@untranslated, 12), ", ", & &1.original_word)}. Some of
+            these are right, because the word is the same in both languages. The rest were never
+            translated, and checking forms on top of them is polishing the wrong layer.
+          </div>
+
+          <div :if={@run.status in [:idle, :finished]} class="flex flex-wrap items-center gap-4">
+            <button
+              :if={@verification.unverified > 0}
+              phx-click="verify"
+              data-confirm={"Check #{@verification.unverified} entries? The first tiers are free; whatever reaches the round trip costs up to #{money(Run.estimate_cost(@verification.unverified, :verify))}."}
+              class="bg-sky-600 text-white py-2 px-5 rounded-lg hover:bg-sky-700 transition"
+            >
+              Verify {@verification.unverified}
+            </button>
+            <span :if={@verification.unverified == 0} class="text-gray-600 text-sm">
+              Every generated {@language_pair} entry has been through the chain.
             </span>
           </div>
         </div>
@@ -372,6 +511,16 @@ defmodule LinguaswapWeb.DictionaryReviewLive do
                 <dd class="font-medium">{value}</dd>
               </div>
             </dl>
+
+            <div :if={evidence(entry) != []} class="mt-4 pt-4 border-t border-gray-100 space-y-1">
+              <div :for={claim <- evidence(entry)} class="text-xs flex items-baseline gap-2">
+                <span class={"px-2 py-0.5 rounded #{verdict_class(claim["verdict"])}"}>
+                  {field_label(claim["field"])}
+                </span>
+                <span class="text-gray-600">{claim["surface"]}</span>
+                <span class="text-gray-500">— {describe_verdict(claim)}</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -41,6 +41,66 @@ defmodule LinguaswapWeb.DictionaryReviewLiveTest do
       assert html =~ "past tense"
     end
 
+    test "shows which tiers can speak for the pair, and where the floor is", %{conn: conn} do
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      assert html =~ "1. paradigm"
+      assert html =~ "3. corpus"
+      assert html =~ "auto-approves at tier 3 or stronger"
+    end
+
+    test "switching to a pair with no resources says which tiers are dark", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/dictionary/review")
+
+      html =
+        view
+        |> element("form[phx-change='select-pair']")
+        |> render_change(%{"language_pair" => "en-uz"})
+
+      # A floor of 2 with nothing at tiers 1 or 2 is the honest statement that
+      # en-uz cannot be checked, and the page has to say so rather than showing
+      # a chain that will return :unknown for everything.
+      assert html =~ "auto-approves at tier 2 or stronger"
+      assert html =~ "line-through"
+    end
+
+    test "offers to verify what has been generated but not checked", %{conn: conn} do
+      pending_word()
+
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      assert html =~ "Verify 1"
+    end
+
+    test "shows what the chain found on an entry it could not settle", %{conn: conn} do
+      pending_word(%{
+        target_translation: "rendirse",
+        forms: %{"past" => "se rindió"},
+        verified_at: DateTime.utc_now(:second),
+        verification: %{
+          "verdict" => "unknown",
+          "tier" => nil,
+          "floor" => 3,
+          "dropped" => [],
+          "claims" => %{
+            "past" => %{
+              "verdict" => "unknown",
+              "tier" => nil,
+              "verifier" => nil,
+              "surface" => "se rindió",
+              "attested" => true
+            }
+          }
+        }
+      })
+
+      {:ok, _view, html} = live(conn, ~p"/dictionary/review")
+
+      # Why this row in particular is in front of a reader.
+      assert html =~ "unknown — no tier had data"
+      assert html =~ "se rindió"
+    end
+
     test "says so when nothing is waiting", %{conn: conn} do
       {:ok, _view, html} = live(conn, ~p"/dictionary/review")
 
@@ -215,22 +275,34 @@ defmodule LinguaswapWeb.DictionaryReviewLiveTest do
       send(view.pid, {:dictionary_run, finished_status()})
 
       html = render(view)
-      assert html =~ "generated 38 en-es entries"
+      assert html =~ "38 entries generated"
       assert html =~ "$0.19"
       assert html =~ "2 could not be generated"
       assert html =~ "stopped at the cost cap"
     end
+
+    test "a verification run reports what it approved and what it queued", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/dictionary/review")
+
+      send(view.pid, {:dictionary_run, verified_status()})
+
+      html = render(view)
+      assert html =~ "31 entries approved"
+      assert html =~ "7 went to the queue"
+    end
   end
 
-  defp running_status do
+  defp running_status(job \\ :generate) do
     %{
       status: :running,
       running?: true,
+      job: job,
       language_pair: "en-es",
       total: 100,
       done: 40,
       generated: 40,
       failed: [],
+      result: %{},
       stopped: nil,
       started_at: DateTime.utc_now(),
       finished_at: nil,
@@ -249,6 +321,19 @@ defmodule LinguaswapWeb.DictionaryReviewLiveTest do
         stopped: :cost_cap_reached,
         finished_at: DateTime.utc_now(),
         spent_usd: 0.1875
+    }
+  end
+
+  defp verified_status do
+    %{
+      running_status(:verify)
+      | status: :finished,
+        running?: false,
+        generated: 31,
+        result: %{verified: 38, approved: 31, queued: 7, dropped: [], stopped: nil},
+        stopped: nil,
+        finished_at: DateTime.utc_now(),
+        spent_usd: 0.02
     }
   end
 

@@ -81,8 +81,55 @@ defmodule Linguaswap.DictionaryTest do
       entry = Vocabulary.get_word_by_original("run", "en-es")
       assert entry.pos == "verb"
       assert entry.forms == %{"past" => "corrió", "gerund" => "corriendo"}
-      assert entry.source == "llm"
       assert entry.review_status == "pending"
+
+      # `source` names where the *translation* came from, and this one came
+      # from the seed. The generator filled in the forms around it and left the
+      # provenance of the translation alone.
+      assert entry.source == "seed"
+    end
+
+    test "marks the source llm when it supplied the translation itself",
+         %{budget: budget} do
+      word(%{original_word: "run", target_translation: nil, language_pair: "en-zh"})
+      stub_generation([generated(%{"translation" => "跑", "forms" => []})])
+
+      assert %{generated: 1} = Dictionary.generate("en-zh", budget: budget)
+
+      entry = Vocabulary.get_word_by_original("run", "en-zh")
+      assert entry.target_translation == "跑"
+      assert entry.source == "llm"
+      # A generated translation queues even with no forms: for en-zh the
+      # translation is the whole entry, and there is nothing else to check.
+      assert entry.review_status == "pending"
+    end
+
+    test "stores a pronunciation for Chinese and ignores one offered for Spanish",
+         %{budget: budget} do
+      word(%{original_word: "run", target_translation: nil, language_pair: "en-zh"})
+      word(%{original_word: "walk", target_translation: "caminar", frequency_rank: 2})
+
+      stub_generation([
+        generated(%{
+          "original_word" => "run",
+          "translation" => "跑",
+          "pronunciation" => "pǎo",
+          "forms" => []
+        }),
+        generated(%{
+          "original_word" => "walk",
+          "translation" => "caminar",
+          "pronunciation" => "kah-mee-NAR"
+        })
+      ])
+
+      Dictionary.generate("en-zh", budget: budget)
+      Dictionary.generate("en-es", budget: budget)
+
+      assert Vocabulary.get_word_by_original("run", "en-zh").pronunciation == "pǎo"
+      # Spanish has no romanisation, so there is no field to fill and an offered
+      # one is dropped rather than stored.
+      assert Vocabulary.get_word_by_original("walk", "en-es").pronunciation == nil
     end
 
     test "never overwrites a translation that was already there", %{budget: budget} do
@@ -387,6 +434,23 @@ defmodule Linguaswap.DictionaryTest do
       system = Dictionary.system_prompt("en-uz")
       assert system =~ "English"
       assert system =~ "Uzbek"
+    end
+
+    test "asks for pinyin only where the script needs it" do
+      chinese = Dictionary.system_prompt("en-zh")
+      assert chinese =~ "Chinese"
+      assert chinese =~ "Hanyu Pinyin"
+
+      # A Spanish prompt is what it was before Chinese existed: "correr" is
+      # already its own pronunciation guide, and a field nothing can fill is an
+      # invitation to fill it anyway.
+      refute Dictionary.system_prompt("en-es") =~ "Pinyin"
+
+      refute Dictionary.response_schema("en-es")["properties"]["entries"]["items"]["properties"]
+             |> Map.has_key?("pronunciation")
+
+      assert Dictionary.response_schema("en-zh")["properties"]["entries"]["items"]["properties"]
+             |> Map.has_key?("pronunciation")
     end
 
     test "gives the model the translation an entry already has" do

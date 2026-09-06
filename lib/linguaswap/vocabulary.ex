@@ -471,6 +471,11 @@ defmodule Linguaswap.Vocabulary do
       on: w.id == uw.word_id,
       where: uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
+      # Kept in step with `Linguaswap.Vocabulary.Word.servable?/1`: a row with no
+      # translation yet, or one a model invented and nothing has checked, has
+      # nothing to put on a page.
+      where: not is_nil(w.target_translation),
+      where: w.source != "llm" or w.review_status == "approved",
       order_by: [asc_nulls_last: w.frequency_rank, asc: w.id],
       select: %{word: w, user_word: uw}
     )
@@ -596,6 +601,10 @@ defmodule Linguaswap.Vocabulary do
   @doc """
   Dictionary entries the user has not been given yet, in the order they will be
   introduced.
+
+  Entries whose target column is still empty are skipped. They are placeholders
+  the generator has not reached yet (see `Linguaswap.Vocabulary.Word.servable?/1`),
+  and activating one would spend a budget slot on a word that cannot be shown.
   """
   def frontier_words(user_id, language_pair, limit) do
     from(w in Word,
@@ -603,6 +612,11 @@ defmodule Linguaswap.Vocabulary do
       on: uw.word_id == w.id and uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
       where: is_nil(uw.id),
+      # Kept in step with `Linguaswap.Vocabulary.Word.servable?/1`: a row with no
+      # translation yet, or one a model invented and nothing has checked, has
+      # nothing to put on a page.
+      where: not is_nil(w.target_translation),
+      where: w.source != "llm" or w.review_status == "approved",
       order_by: [asc_nulls_last: w.frequency_rank, asc: w.id],
       limit: ^limit,
       select: w
@@ -656,6 +670,11 @@ defmodule Linguaswap.Vocabulary do
       on: uw.word_id == w.id and uw.user_id == ^user_id,
       where: w.language_pair == ^language_pair,
       where: is_nil(uw.id),
+      # Kept in step with `Linguaswap.Vocabulary.Word.servable?/1`: a row with no
+      # translation yet, or one a model invented and nothing has checked, has
+      # nothing to put on a page.
+      where: not is_nil(w.target_translation),
+      where: w.source != "llm" or w.review_status == "approved",
       select: count(w.id)
     )
     |> Repo.one()

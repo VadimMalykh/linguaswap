@@ -1,0 +1,571 @@
+# English -> Chinese (Simplified) dictionary for LinguaSwap.
+#
+# The target column is deliberately empty, and this is the first dictionary in
+# the project built that way.
+#
+# en-es.tsv and en-uz.tsv carry a hand-authored or hand-checked translation for
+# every row. Nobody on this project reads Chinese, so authoring 539 of them by
+# hand would have meant either machine-translating them into a file that then
+# *looks* hand-checked, or shipping the placeholder rows en-uz still carries —
+# `the -> the`, the English left in the target column, which is the worst of the
+# three because it is indistinguishable from a real answer.
+#
+# So the file carries only what it actually knows: which English words earn a
+# dictionary entry and in what order. That is the whole English side of
+# en-es.tsv — the same OpenSubtitles-2018 frequency ordering, the same
+# lemma reduction by the extension's own lemmatizer, the same phrase section at
+# the same hand-placed ranks — and it is genuinely language-independent data,
+# because it describes English.
+#
+# The Chinese is filled in by `Linguaswap.Dictionary`, which only ever supplies
+# a translation that is missing, and is then checked by
+# `Linguaswap.Verification` before it is served to anyone. An entry with an
+# empty target column is kept out of the active pool and out of the API until
+# that has happened, so importing this file changes nothing a user sees.
+#
+# Chinese does not inflect, so no entry here will ever carry `forms`. What it
+# carries instead is `pronunciation` — pinyin with tone marks — because a reader
+# who meets 跑 on a page has no way to sound it out, and a gloss they cannot say
+# is half a gloss.
+#
+# Columns: original_word <TAB> target_translation <TAB> frequency_rank
+# Import with: mix linguaswap.import_words priv/data/en-zh.tsv
+you		1
+i		2
+the		3
+to		4
+a		5
+it		6
+and		7
+that		8
+of		9
+be		10
+in		11
+what		12
+we		13
+me		14
+this		15
+he		16
+for		17
+my		18
+on		19
+have		20
+your		21
+do		22
+no		23
+not		24
+know		25
+can		26
+with		27
+but		28
+all		29
+so		30
+just		31
+there		32
+here		33
+they		34
+like		35
+get		36
+she		37
+go		38
+if		39
+right		40
+out		41
+about		42
+up		43
+at		44
+him		45
+now		46
+oh		47
+one		48
+come		49
+well		50
+her		51
+how		52
+yeah		53
+will		54
+want		55
+think		56
+as		57
+see		58
+good		59
+who		60
+why		61
+from		62
+let		63
+his		64
+yes		65
+when		66
+time		67
+an		68
+okay		69
+back		70
+look		71
+us		72
+would		73
+them		74
+where		75
+take		76
+then		77
+or		78
+our		79
+tell		80
+really		81
+man		82
+some		83
+say		84
+hey		85
+could		86
+by		87
+need		88
+something		89
+too		90
+more		91
+way		92
+down		93
+make		94
+very		95
+never		96
+only		97
+people		98
+over		99
+because		100
+little		101
+please		102
+love		103
+should		104
+mean		105
+sorry		106
+give		107
+off		108
+thank		109
+any		110
+two		111
+even		112
+much		113
+sure		114
+thing		115
+these		116
+help		117
+first		118
+into		119
+anything		120
+still		121
+find		122
+life		123
+nothing		124
+day		125
+work		126
+their		127
+again		128
+maybe		129
+must		130
+before		131
+other		132
+wait		133
+stop		134
+call		135
+after		136
+talk		137
+away		138
+than		139
+home		140
+night		141
+put		142
+great		143
+those		144
+last		145
+everything		146
+new		147
+always		148
+keep		149
+long		150
+year		151
+leave		152
+money		153
+around		154
+name		155
+place		156
+ever		157
+feel		158
+guy		159
+father		160
+old		161
+which		162
+big		163
+lot		164
+hello		165
+nice		166
+believe		167
+girl		168
+someone		169
+fine		170
+thanks		171
+kind		172
+house		173
+every		174
+ok		175
+through		176
+course		177
+stay		178
+dad		179
+enough		180
+happen		181
+may		182
+mother		183
+wrong		184
+world		185
+bad		186
+might		187
+three		188
+today		189
+listen		190
+another		191
+understand		192
+hear		193
+remember		194
+ask		195
+own		196
+same		197
+show		198
+else		199
+kill		200
+next		201
+care		202
+car		203
+son		204
+try		205
+woman		206
+hi		207
+dead		208
+many		209
+mind		210
+friend		211
+mom		212
+morning		213
+boy		214
+together		215
+yourself		216
+job		217
+family		218
+real		219
+without		220
+baby		221
+room		222
+already		223
+move		224
+most		225
+live		226
+miss		227
+actually		228
+both		229
+once		230
+ready		231
+head		232
+use		233
+idea		234
+hold		235
+happy		236
+door		237
+such		238
+brother		239
+also		240
+pretty		241
+bit		242
+yet		243
+whole		244
+start		245
+while		246
+since		247
+wife		248
+guess		249
+tomorrow		250
+matter		251
+meet		252
+bring		253
+tonight		254
+everyone		255
+run		256
+hard		257
+alone		258
+myself		259
+school		260
+end		261
+phone		262
+play		263
+problem		264
+few		265
+ago		266
+open		267
+anyone		268
+hope		269
+face		270
+until		271
+lose		272
+police		273
+excuse		274
+turn		275
+business		276
+case		277
+true		278
+die		279
+heart		280
+soon		281
+each		282
+worry		283
+later		284
+watch		285
+music		286
+hand		287
+probably		288
+beautiful		289
+doctor		290
+sit		291
+eat		292
+young		293
+second		294
+water		295
+person		296
+part		297
+kid		298
+late		299
+stuff		300
+exactly		301
+under		302
+death		303
+minute		304
+pay		305
+crazy		306
+forget		307
+everybody		308
+change		309
+five		310
+drink		311
+far		312
+its		313
+whatever		314
+eye		315
+shut		316
+hit		317
+easy		318
+check		319
+deal		320
+different		321
+means		322
+point		323
+inside		324
+somebody		325
+mine		326
+body		327
+afraid		328
+sleep		329
+chance		330
+dear		331
+quite		332
+four		333
+anyway		334
+close		335
+party		336
+fun		337
+against		338
+word		339
+important		340
+set		341
+shall		342
+story		343
+number		344
+daughter		345
+least		346
+hurt		347
+wish		348
+moment		349
+fight		350
+week		351
+husband		352
+rest		353
+marry		354
+fire		355
+game		356
+nobody		357
+child		358
+side		359
+stand		360
+read		361
+though		362
+cut		363
+sister		364
+suppose		365
+between		366
+hour		367
+speak		368
+behind		369
+almost		370
+truth		371
+blood		372
+able		373
+lady		374
+anymore		375
+shot		376
+reason		377
+trouble		378
+break		379
+war		380
+city		381
+walk		382
+town		383
+trust		384
+office		385
+question		386
+welcome		387
+high		388
+wow		389
+couple		390
+half		391
+cool		392
+free		393
+either		394
+seem		395
+power		396
+whoa		397
+bye		398
+buy		399
+honey		400
+front		401
+team		402
+answer		403
+gun		404
+line		405
+send		406
+news		407
+stupid		408
+bed		409
+hurry		410
+full		411
+month		412
+save		413
+sometime		414
+become		415
+along		416
+hate		417
+food		418
+outside		419
+light		420
+dog		421
+country		422
+clear		423
+order		424
+fact		425
+lord		426
+captain		427
+six		428
+hot		429
+funny		430
+black		431
+alive		432
+pick		433
+cause		434
+ahead		435
+king		436
+plan		437
+dinner		438
+sigh		439
+sort		440
+boss		441
+alright		442
+promise		443
+safe		444
+book		445
+white		446
+anybody		447
+small		448
+perfect		449
+special		450
+parent		451
+himself		452
+perhaps		453
+sound		454
+serious		455
+sick		456
+company		457
+scare		458
+uncle		459
+poor		460
+red		461
+past		462
+earth		463
+possible		464
+shoot		465
+touch		466
+top		467
+laugh		468
+win		469
+glad		470
+control		471
+human		472
+drive		473
+hair		474
+luck		475
+murder		476
+air		477
+ten		478
+daddy		479
+finally		480
+chuckle		481
+fast		482
+cold		483
+hospital		484
+street		485
+hang		486
+dance		487
+till		488
+catch		489
+follow		490
+sense		491
+sex		492
+lie		493
+master		494
+of course		38
+come on		44
+all right		52
+thank you		58
+a little		66
+right now		74
+a lot of		82
+no one		90
+at all		98
+at least		106
+as well		114
+too much		122
+so much		130
+how much		138
+how many		146
+a few		154
+in fact		162
+for example		170
+by the way		178
+excuse me		186
+go ahead		194
+find out		202
+come back		210
+give up		218
+look for		226
+make sure		234
+get up		242
+wake up		250
+sit down		258
+shut up		266
+go out		274
+take care		282
+so far		290
+at first		298
+over there		306
+once again		314
+no longer		322
+more or less		330
+as soon as		338
+as long as		346
+as well as		354
+in front of		362
+point of view		370
+these days		378
+at the same time		386

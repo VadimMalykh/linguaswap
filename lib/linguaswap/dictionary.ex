@@ -41,8 +41,9 @@ defmodule Linguaswap.Dictionary do
 
   import Ecto.Query, warn: false
 
-  alias Linguaswap.Repo
+  alias Linguaswap.Languages
   alias Linguaswap.LLM
+  alias Linguaswap.Repo
   alias Linguaswap.Vocabulary.Word
 
   # Entries per request. Small enough that one bad batch is cheap to lose and
@@ -50,15 +51,14 @@ defmodule Linguaswap.Dictionary do
   # cost of the instructions is amortised over real work.
   @batch_size 20
 
-  @languages %{"en" => "English", "es" => "Spanish", "uz" => "Uzbek"}
-
   @doc """
   Human-readable language names for a pair, as `{source, target}`.
+
+  Delegated to `Linguaswap.Languages`, which is where a language's name lives
+  alongside the script, romanisation and verification declarations that have to
+  agree with it.
   """
-  def language_names(language_pair) do
-    [source, target] = String.split(language_pair, "-", parts: 2)
-    {Map.get(@languages, source, source), Map.get(@languages, target, target)}
-  end
+  defdelegate language_names(language_pair), to: Linguaswap.Languages, as: :names
 
   ## Selecting work
 
@@ -294,7 +294,7 @@ defmodule Linguaswap.Dictionary do
   end
 
   defp generate_once(language_pair, entries, opts) do
-    case LLM.complete(prompt(language_pair, entries), response_schema(),
+    case LLM.complete(prompt(language_pair, entries), response_schema(language_pair),
            system: system_prompt(language_pair),
            model: opts[:model],
            budget: opts[:budget]
@@ -337,7 +337,6 @@ defmodule Linguaswap.Dictionary do
     attrs = %{
       pos: entry["pos"],
       forms: forms,
-      source: "llm",
       review_status: review_status_for(word, forms)
     }
 
@@ -349,14 +348,43 @@ defmodule Linguaswap.Dictionary do
     attrs = fill_missing(attrs, :lemma, word.lemma, entry["lemma"])
 
     word
-    |> Word.changeset(attrs)
+    |> Word.changeset(add_pronunciation(attrs, word, entry))
     |> Repo.update()
   end
 
+  # `source` records where the *translation* came from rather than who filled
+  # the row in last, because that is the distinction anything downstream cares
+  # about: `Linguaswap.Verification` verifies a translation the model invented
+  # and leaves a hand-authored one alone. An entry whose translation came from
+  # `en-es.tsv` stays `import` no matter how many forms were generated for it.
+  defp source_for(%Word{source: source}, attrs) do
+    if Map.has_key?(attrs, :target_translation), do: "llm", else: source
+  end
+
+  # Only for a target whose script gives a learner nothing to say — see
+  # `Linguaswap.Languages.romanization/1`. Repeating "correr" in a pronunciation
+  # column would be a column of noise, and a pinyin field on a Spanish entry
+  # would be a field nothing could ever fill.
+  defp add_pronunciation(attrs, %Word{} = word, entry) do
+    attrs = Map.put(attrs, :source, source_for(word, attrs))
+
+    if Languages.romanized?(word.language_pair) do
+      fill_missing(attrs, :pronunciation, word.pronunciation, entry["pronunciation"])
+    else
+      attrs
+    end
+  end
+
   # Review is for the target text a reader will see. An entry that came back
-  # with no forms and no new translation proposes nothing to look at — a
-  # pronoun or a preposition, generally — so it is approved on the spot rather
-  # than filling the queue with rows whose only answer is "yes, fine".
+  # with no forms, and whose translation the model did not have to invent,
+  # proposes nothing to look at — a pronoun or a preposition, generally — so it
+  # is approved on the spot rather than filling the queue with rows whose only
+  # answer is "yes, fine".
+  #
+  # A generated translation is a different matter and always queues, even with
+  # no forms: for `en-zh` the translation *is* the entry, and approving it
+  # unread would be approving the whole dictionary unread. What takes it back
+  # out of the queue is `Linguaswap.Verification`, not a rule here.
   defp review_status_for(%Word{target_translation: translation}, forms) do
     has_translation = is_binary(translation) and String.trim(translation) != ""
 
@@ -464,7 +492,22 @@ defmodule Linguaswap.Dictionary do
       a slot.
     - Keep the register neutral and the forms consistent with the translation \
       you are given.
+    #{romanization_rule(language_pair)}\
     """
+  end
+
+  # Only present for a target language that needs one, so a Spanish prompt is
+  # exactly the prompt it was before this existed.
+  defp romanization_rule(language_pair) do
+    case Languages.romanization(language_pair) do
+      :pinyin ->
+        "- Also give `pronunciation`: Hanyu Pinyin with tone marks, grouped by " <>
+          "word rather than by syllable (`pǎo`, `xiè xie`). A reader of the gloss " <>
+          "cannot sound out the characters, so this is half of what the entry is for.\n"
+
+      nil ->
+        ""
+    end
   end
 
   @doc """
@@ -524,8 +567,8 @@ defmodule Linguaswap.Dictionary do
   `sanitize_forms/2` turns the list back into the map the database stores, so
   the shape on the wire is the only thing that changed.
   """
-  def response_schema do
-    %{
+  def response_schema(language_pair \\ nil) do
+    schema = %{
       "type" => "object",
       "properties" => %{
         "entries" => %{
@@ -565,5 +608,19 @@ defmodule Linguaswap.Dictionary do
       "required" => ["entries"],
       "additionalProperties" => false
     }
+
+    # `pronunciation` is added only for a pair that has a romanisation, so a
+    # Spanish request is byte for byte the request it was before Chinese
+    # existed. An optional property nothing will ever fill is an invitation for
+    # a model to fill it anyway.
+    if language_pair && Languages.romanized?(language_pair) do
+      put_in(
+        schema,
+        ["properties", "entries", "items", "properties", "pronunciation"],
+        %{"type" => "string", "description" => "Romanised pronunciation of the translation."}
+      )
+    else
+      schema
+    end
   end
 end

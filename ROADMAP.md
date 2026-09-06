@@ -18,14 +18,15 @@ before 5 keeps the runtime client dumb and fast (Q4 "precompute-first").
 | 2 — Lemmatization coverage | One entry matches every inflection | ✅ done |
 | 3 — Phrases and density control | Multi-word entries, swap-density cap | ✅ done |
 | 4 — LLM precompute pipeline | Generated POS and inflected forms, with review | ✅ done |
-| 4.5 — Automated verification | Machine-checked forms; the human queue shrinks to the residue | ⬜ next |
-| 5 — Sentence-level swap | Whole-sentence translation above a threshold | ⬜ planned |
+| 4.5 — Automated verification | Machine-checked forms; the human queue shrinks to the residue | ✅ done |
+| 4.6 — English → Chinese | A third pair, with pinyin and a generated target column | ✅ done |
+| 5 — Sentence-level swap | Whole-sentence translation above a threshold | ⬜ next |
 | 6 — Harvest and ecosystem | Auto-harvest from real pages, Anki export | ⬜ planned |
 
 Both test suites pass:
 
 ```bash
-docker compose exec -e MIX_ENV=test app mix test              # 249 tests
+docker compose exec -e MIX_ENV=test app mix test              # 328 tests
 docker compose exec app node --test 'chrome-extension/test/*.test.js'   # 50 tests
 ```
 
@@ -53,16 +54,28 @@ The app is usable end to end as a local, single-machine build:
    reached the entry — a past tense, a gerund, a plural — and picks the stored
    target form for it, falling back to the dictionary form when there is none.
    Those forms are generated with the Claude API at import time and are not
-   served until a human approves them at `/dictionary/review`.
-6. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
-   one form settles every form of the same word on the page.
-7. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
+   served until they have been checked.
+6. **Generated data is checked by machine, not by a reader.** A chain of
+   verifiers — a morphological database, a closed per-language rule, a corpus
+   attestation list, and an analysis of the surface with the answer hidden —
+   approves what it can justify and sends the rest to `/dictionary/review`. For
+   `en-es` the local tiers settle every claim on every generated entry, at no
+   cost and with no API key.
+7. **Three language pairs.** `en-es` (494 words plus 45 phrases from a corpus
+   frequency list), `en-uz` (the 98-word seed), and `en-zh`, which ships the
+   English side of the dictionary with an empty target column and has the
+   generator supply the Chinese and its pinyin.
+8. **Hover reveals the original**; clicking opens Hard / Simple / Easy. Rating
+   one form settles every form of the same word on the page. For a Chinese swap,
+   the reveal also shows the pinyin, because a reader who meets 跑 has no way to
+   sound it out.
+9. **Words graduate.** Rating a word "Easy" — or 100 exposures with no reveal —
    promotes it to `trivial`, which frees budget and pulls the next frontier word
    into the pool automatically.
-8. **The dashboard** shows pool state (active / graduated / frontier), stats and
-   page-visit history.
-9. **YouTube video titles** are translated too, through a separate path that
-   copes with YouTube reusing the title node across navigations.
+10. **The dashboard** shows pool state (active / graduated / frontier), stats and
+    page-visit history.
+11. **YouTube video titles** are translated too, through a separate path that
+    copes with YouTube reusing the title node across navigations.
 
 ## What is not built yet
 
@@ -70,12 +83,14 @@ Ordered by how much it limits real use.
 
 | Gap | Why it matters | Addressed by |
 | --- | --- | --- |
-| **Most of the dictionary is still ungenerated** | 60 of 539 en-es entries have forms; the rest, and all of en-uz, do not. Generating them is one button and about $0.70 — but nothing generated is served until a human approves it one row at a time, and that is the actual blocker, not the run. | Phase 4.5 |
-| **Review does not scale, and asks the wrong person** | Per-entry approval assumes a reviewer who reads the target language. The project does not have one, so approval is a rubber stamp for en-es and impossible for en-uz — and it caps the dictionary at whatever a human can read, which is why it stopped near 500. | Phase 4.5 |
+| **Most of the dictionary is still ungenerated** | 61 of 539 en-es entries have forms; the rest, all of en-uz, and all 539 en-zh rows do not. This is now only a cost, not a blocker: generating everything is one button and about $1.70, and what comes back is approved by evidence rather than by a reader. | A decision to spend it |
+| **en-zh has no Chinese in it yet** | `priv/data/en-zh.tsv` ships the English side with an empty target column by design — nobody on the project reads Chinese, so the alternative was a machine-translated file that looks hand-checked. Until it is generated, the pair imports 539 placeholder rows that are deliberately kept out of every pool and out of the API. | A generation run |
+| **Nothing verifies a hand-authored translation** | The chain checks morphology given a lemma, and checks a *generated* gloss by round trip. A gloss a human typed into a TSV is taken as given — `en-es.tsv` is 539 such judgements nothing has ever re-read. | Unscheduled |
 | **No LLM at page-load time** | Sentence-level swap, cache misses and novel inflections all need a runtime call; today the client only reads precomputed data. | Phase 5 |
 | **Phrase ranks are hand-placed** | The corpus list is unigrams, so it cannot say where "of course" belongs among single words. The 45 phrase ranks in `en-es.tsv` are estimates. | A bigram frequency source |
-| **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. Phase 4 can generate it and Phase 4.5 can verify some of it, but Uzbek is the pair where the verification chain falls through most often — see "The confidence floor is per language". | Phase 4.5, then a native reviewer for the residue |
-| **Some en-uz translations are untranslated placeholders** | The 98-word seed carries rows like `the → the`, where the English was left in the target column. Verifying inflected forms on top of an unverified translation column is polishing the wrong layer, so these need finding before en-uz generation is worth paying for. | Phase 4.5 (pre-pass) |
+| **en-uz cannot be verified at all** | Phase 4.5 predicted Uzbek would be the pair where the chain falls through most often. It is worse than that: UniMorph's Uzbek is 1,277 rows over 16 noun lemmas, none of which appear in `en-uz.tsv`, and FrequencyWords has no Uzbek list. Tiers 1 to 3 are dark, the floor is set to 2 to say so, and en-uz auto-approves nothing. | A resource, or a native reviewer |
+| **en-uz has no phrases, and is still the 98-word seed** | en-es was rebuilt from a corpus frequency list; Uzbek was left alone rather than machine-translated without a speaker to check it. | A bigram source and a speaker |
+| **Some en-uz translations are untranslated placeholders** | The 98-word seed carries `the → the`, where the English was left in the target column. `Linguaswap.Verification.untranslated_rows/1` now finds these and the dashboard says so, but nothing fixes them. | A speaker |
 | **The density cap is per text node, not per rendered sentence** | Markup splits sentences: `<p>Some <b>bold</b> text.</p>` is three runs, and the cap applies to each. It bounds every fragment, which errs toward swapping too little. | Unscheduled |
 | **No UI for the word budget or the density** | Settable only through `PUT /api/v1/settings` under `settings.word_budget` and `settings.swap_density`. | Unscheduled |
 
@@ -163,42 +178,66 @@ Resolves: DESIGN dependency "per-language frequency_rank dataset", "dead fields"
   at import time: translation, lemma, POS, and **target-side inflected forms**
   into `forms`.
 - Review workflow in the dashboard (approve / reject generated forms) at
-  `/dictionary/review`; nothing generated is served before approval.
+  `/dictionary/review`; nothing generated is served before approval. Phase 4.5
+  keeps the "not served before approval" half and replaces the "by a human"
+  half.
 - Rate limiting and cost caps (SPEC open question 4) in `Linguaswap.LLM.Budget`.
 - Client picks the right stored form from features the lemmatizer now reports
   (tense, number) — natural output with a still-dumb runtime.
 
 **Its review model did not survive contact with the second entry.** Everything
 above works; the gate in front of it does not scale and asks a question its
-reviewer cannot answer. Phase 4.5 replaces the gate, not the pipeline.
+reviewer cannot answer. Phase 4.5 replaced the gate, not the pipeline.
 
-## Phase 4.5 — Automated verification (Q1-E's missing half) ⬜ next
+## Phase 4.5 — Automated verification (Q1-E's missing half) ✅ done
 
 *Correctness from evidence rather than from a human reading every row.*
 
 - A three-valued verifier contract — `:confirmed | :contradicted | :unknown` —
-  and a chain of verifiers behind it, ordered strongest first. `:unknown` is not
-  `:contradicted`: a verifier with nothing to say passes the entry down the chain.
-- **Paradigm lookup** against a morphological resource (UniMorph or a Wiktextract
-  dump), matched by *containment*: `past` confirms if the surface appears
-  anywhere in that lemma's past paradigm, which deliberately declines to choose
-  between preterite and imperfect (Phase 4, Decision 1).
-- **Corpus attestation** against a target-side frequency list from
+  and a chain of four verifiers behind it, ordered strongest first. `:unknown`
+  is not `:contradicted`: a verifier with nothing to say passes the claim down
+  the chain.
+- **Paradigm lookup** (tier 1) against UniMorph, matched by *containment*:
+  `past` confirms if the surface appears anywhere in that lemma's past
+  paradigm, which deliberately declines to choose between preterite and
+  imperfect (Phase 4, Decision 1).
+- **Rule check** (tier 2), per language and only where the rule is closed:
+  Spanish noun plurals and the periphrastic comparative.
+- **Corpus attestation** (tier 3) against a target-side frequency list from
   `hermitdave/FrequencyWords` — the same source `build_dictionary.py` already
-  uses for English, now for ~100 target languages. Catches invented surfaces.
-- **Round-trip analysis**: a model analyses the generated surface cold, without
-  being shown what it is supposed to be, and the lemma and features it reports
-  must match what was asked for.
-- **Cross-model consensus** as the weakest tier: a second model generates the
-  same entry independently and the answers are compared. Never an LLM asked
-  "is this correct?".
+  uses for English. Catches invented surfaces; never rejects on absence.
+- **Round-trip analysis** (tier 4): a model analyses the generated surface cold,
+  without being shown what it is supposed to be, and the lemma, features and
+  meanings it reports must match what was asked for. This is the only tier that
+  can speak to a *translation*, which is what `en-zh` is made of.
 - A per-language **confidence floor** deciding which tier is good enough to
-  auto-approve, so a pair with poor resources routes more to a human rather
-  than silently approving on weak evidence.
+  auto-approve, so a pair with poor resources routes to a human rather than
+  silently approving on weak evidence.
+- A contradiction from tier 1 or 2 **drops the offending form** and judges the
+  entry on what is left, because an entry with no form for a slot is exactly
+  what the client already copes with.
 - The human queue survives, sized in tens: the lexical residue, phrases, and
   everything the chain returned `:unknown` for.
 
-## Phase 5 — Sentence-level swap (Q3-C, gated by Q3-D and Q3-E) ⬜ planned
+**No tier 5.** Cross-model consensus was specified as the weakest tier and was
+not built — see "What Phase 4.5 built" for why the residue turned out not to be
+the shape it would have helped with.
+
+## Phase 4.6 — English → Chinese ✅ done
+
+*A third pair, and the first whose target side the project cannot read.*
+
+- `en-zh` end to end: language declaration, `priv/data/en-zh.tsv`, generation,
+  verification, API and extension.
+- The dictionary ships **with an empty target column**, because the honest
+  alternatives were a machine-translated file that looks hand-checked or the
+  `the → the` placeholders `en-uz` still carries.
+- A **pronunciation** column, filled with pinyin for a target script a learner
+  cannot sound out, shown on reveal.
+- Generated translations are **withheld from the API until checked**, which
+  Phase 4 did not need to do because every translation used to be hand-authored.
+
+## Phase 5 — Sentence-level swap (Q3-C, gated by Q3-D and Q3-E) ⬜ next
 
 *The architectural shift: first runtime intelligence.*
 
@@ -229,14 +268,16 @@ Phase 0 ──┬─> Phase 1 (needs frequency_rank + activated_at)
 
 Phase 2 ──> Phase 3 ──> Phase 5
 Phase 4 ──> Phase 4.5 (verifies what the pipeline generates)
+Phase 4.5 ──> Phase 4.6 (en-zh is unreadable without it)
 Phase 4 ──> Phase 5 (cache/LLM plumbing reused)
 Phase 1 ──> Phase 6 (pool is where harvested words land)
 ```
 
-Phase 4.5 does not gate Phase 5 technically — the sentence path does not read
-`forms`. It gates it in practice: Phase 5 is a per-user, per-page-view cost, and
-committing to that while 90% of the precomputed dictionary sits unserved behind
-a review queue spends the expensive path to work around the cheap one.
+Phase 4.5 never gated Phase 5 technically — the sentence path does not read
+`forms`. It gated it in practice, and that gate is now open: the precomputed
+dictionary no longer sits behind a review queue, so committing to a per-user,
+per-page-view cost is a decision about Phase 5 rather than a way around Phase
+4's bottleneck.
 
 ---
 
@@ -830,139 +871,209 @@ back —
 which is the phase working: "she was running" can now come out as "she era
 corriendo" rather than "she ser correr", and a phrase inflects as a unit.
 
-The remaining ~478 en-es entries and all 98 en-uz ones are still ungenerated —
-not because generating them is hard or expensive, but because nothing generated
-is served until a human approves it row by row, and that is the constraint
-Phase 4.5 exists to remove.
+The remaining ~478 en-es entries, all 98 en-uz ones and all 539 en-zh ones are
+still ungenerated. When this was written, that was because nothing generated was
+served until a human approved it row by row. Phase 4.5 removed that constraint;
+what is left is a decision to spend about $1.70.
 
-## What Phase 4.5 must build
+## What Phase 4.5 built
 
-Phase 4 shipped a generator and a gate. The generator works. The gate is the
-problem, and it is worth being precise about why, because the obvious summary —
-"reviewing is slow" — is the less important half.
+Phase 4 shipped a generator and a gate. The generator works. The gate was the
+problem, and it is worth restating why, because the obvious summary —
+"reviewing is slow" — was the less important half.
 
-**The reviewer cannot answer the question.** Per-entry approval assumes someone
-who reads the target language. This project does not have one. For en-es an
-approval is a rubber stamp that looks like quality control; for en-uz it is not
-even that. A gate that always returns "approved" is not a gate, it is a delay,
-and worse, it launders unverified data into the database wearing an `approved`
-label that a later reader will trust.
+**The reviewer could not answer the question.** Per-entry approval assumes
+someone who reads the target language. This project does not have one. For
+en-es an approval was a rubber stamp that looked like quality control; for
+en-uz it was not even that. A gate that always returns "approved" is not a
+gate, it is a delay, and worse, it launders unverified data into the database
+wearing an `approved` label that a later reader will trust.
 
-**And it sized the dictionary.** `en-es.tsv` stops near 500 entries because that
-is roughly what a human could face reviewing, not because 500 is the right
-number. At the measured $0.03 per 20 entries, 5,000 entries is about $7.50 of
-generation. The active pool is 50 words and words graduate out of it, so 539
-entries is roughly ten refills of runway — a motivated user exhausts the entire
-Spanish dictionary. Removing the human from the routine path makes dictionary
-size a cost question, and the cost is small.
+**And it sized the dictionary.** `en-es.tsv` stopped near 500 entries because
+that is roughly what a human could face reviewing, not because 500 is the right
+number.
 
-So: keep the queue, shrink what reaches it.
+So the queue survives and what reaches it shrank.
 
-### The verifier contract
-
-One callback, three values:
-
-    @callback verify(lemma, surface, feature, opts) ::
-                :confirmed | :contradicted | :unknown
-
-`:unknown` is the value that makes this a chain rather than a switch. A verifier
-that has no data for an entry says `:unknown` and the entry falls to the next
-tier — which is a completely different statement from `:contradicted`, and
-collapsing the two into a boolean is what would force a per-language rewrite.
-Most verifiers return `:unknown` most of the time. That is the normal case, not
-a failure.
-
-### The chain, strongest first
-
-1. **Paradigm lookup.** A morphological resource — UniMorph, or a Wiktextract
-   dump from kaikki.org — answering "is this surface in this lemma's paradigm,
-   under a feature bundle we accept?" Matched by **containment, not equality**:
-   `past` confirms if the surface appears anywhere in the lemma's past paradigm,
-   which is a deliberate refusal to choose between preterite and imperfect. That
-   is Phase 4's Decision 1 restated as a query, and it is why this generalises:
-   the runtime is not allowed to choose, so the verifier must not require a
-   choice either.
-
-2. **Rule check.** Small, per-language, and only where the rule is genuinely
-   closed. Spanish noun plurals (+s after a vowel, +es after a consonant,
-   z→ces) and Spanish comparatives (periphrastic "más X" for everything but
-   mejor/peor/mayor/menor) are two dozen lines that settle two of the four POS
-   classes outright.
-
-3. **Corpus attestation.** Does the surface occur in the target language at all?
-   `build_dictionary.py` already pulls `hermitdave/FrequencyWords` for English,
-   and that repo covers ~100 languages — so this is the same pipeline pointed at
-   the target side, with no new kind of dependency. It cannot confirm a *feature*,
-   only existence, but it catches invented surfaces, which is a large share of
-   the error class and the share no human reviewer would catch either.
-   **Presence is a weak confirm; absence is a flag, never an auto-reject** —
-   inflected forms live in the frequency tail and absence proves little.
-
-4. **Round-trip analysis.** Hand a model the generated surface *without* telling
-   it what the surface is supposed to be, and ask it to report the lemma and
-   grammatical features. Check that it round-trips to what was asked for. This
-   is language-agnostic and needs no resource, and it is meaningfully stronger
-   than a judge because it is a different task in a different direction —
-   hallucinated morphology rarely analyses back to the lemma it came from.
-
-5. **Cross-model consensus.** A second model generates the same entry
-   independently and the two answers are compared. **Never** an LLM shown an
-   answer and asked "is this correct?" — verification is far easier to fake than
-   generation, and anchoring the judge on the answer under test buys a second
-   bill and a false sense of coverage.
-
-6. **A human.** Whatever is left.
-
-### The confidence floor is per language
-
-What varies between language pairs is not the code. It is three declarations:
-
-| Per language | What it is |
+| Thing | Where |
 | --- | --- |
-| A paradigm data file | UniMorph or Wiktextract, if one exists for the pair |
-| A feature map | `past` → the target's past-tense bundles; ~7 lines |
-| A confidence floor | Which tier is good enough to auto-approve here |
+| Per-language declarations: name, script, romanisation, feature map, floor | `lib/linguaswap/languages.ex` |
+| The chain, the entry decision, and what gets written | `lib/linguaswap/verification.ex` |
+| The three-valued contract, and `prepare/2` for a tier that batches | `lib/linguaswap/verification/verifier.ex` |
+| One checkable statement about one field | `lib/linguaswap/verification/claim.ex` |
+| Tier 1, UniMorph by containment | `lib/linguaswap/verification/paradigm.ex` |
+| Tier 2, Spanish plurals and comparatives | `lib/linguaswap/verification/rule.ex` |
+| Tier 3, corpus attestation | `lib/linguaswap/verification/corpus.ex` |
+| Tier 4, cold analysis of the surface | `lib/linguaswap/verification/round_trip.ex` |
+| Data files, loaded once into `:persistent_term` | `lib/linguaswap/verification/resource.ex` |
+| The builder for those files | `priv/data/build_verification_data.py` |
+| `verification`, `verified_at`, `pronunciation` | `priv/repo/migrations/20260906120000_add_word_verification.exs` |
+| Verify as a second job on the run server | `lib/linguaswap/dictionary/run.ex` |
+| Verify button, chain state, per-entry evidence | `lib/linguaswap_web/live/dictionary_review_live.ex` |
+| `--verify` | `lib/mix/tasks/linguaswap.import_words.ex` |
 
-The feature map is the per-language artefact that matters, and it is a table
-rather than logic. The floor is the honesty valve: a pair with good resources
-can auto-approve at tier 3, a pair with poor ones cannot, and the difference is
-config rather than a fork in the pipeline.
+### The unit is a claim, not an entry
 
-**For en-uz, set that floor high.** Uzbek is where the chain falls through most
-often, and the tempting fix — lean on consensus — is wrong for a specific
-reason: **model agreement is only evidence when the errors are independent.** In
-a low-resource language two models plausibly trained on much of the same thin
-corpus, so agreement may record a shared blind spot rather than a fact. Tier 5
-should not auto-approve anything for en-uz.
+An entry is not right or wrong as a whole. "give up → rendirse" can be a good
+translation carrying one bad past tense, and an approval that cannot tell those
+apart is the rubber stamp again. So an entry is broken into claims — one per
+stored form, plus one for the translation *when the generator supplied it* —
+and the entry's verdict is assembled from them.
 
-Two Uzbek specifics that will otherwise read as "no resource exists":
+That last qualifier is load-bearing. A translation that came from a hand-authored
+TSV is the dictionary's own data, and checking it against a model would be
+running the comparison backwards. Telling the two apart needed a small change to
+what `source` means: it now records where the *translation* came from rather
+than who last wrote to the row, so an `en-es` entry stays `import` however many
+forms were generated for it, and an `en-zh` entry the generator had to translate
+is `llm`.
 
-- **Script and orthography.** `en-uz.tsv` is Latin with a straight apostrophe
-  (`bo'lish`). Resources come in Cyrillic, or in Latin with `ʻ` / `ʼ` / `'`
-  used inconsistently. Normalise both sides before lookup or every tier returns
-  `:unknown`.
-- **The translation column is not trustworthy yet.** The seed carries rows like
-  `the → the` where the English was never replaced. (Rows like `and → va` are
-  correct — the problem is the untranslated ones specifically.) Verifying forms
-  on top of a bad translation is polishing the wrong layer, so a pre-pass should
-  find the untranslated rows before en-uz generation is paid for.
+### The measured split
 
-### What verification does not cover
+The question "Where to start" posed — build tiers 1 to 3, run them over the
+en-es entries that exist, and let the real split decide whether the later tiers
+are worth building — was answered by running it. Over all 61 generated `en-es`
+entries, with no API key configured so only the free tiers ran:
 
-Worth stating plainly, because the first version of this argument overstated it.
-The chain verifies **morphology given a lemma**. It says nothing about whether
-the lemma is the right gloss — whether `correr` is the right Spanish for "run"
-is a lexical judgement no paradigm table holds an opinion on. Nor does it settle:
+| | |
+| --- | --- |
+| Claims | 42 |
+| Confirmed | 42 — paradigm 24, corpus 16, rule 2 |
+| Contradicted | 0 |
+| Unknown | 0 |
 
-- **Phrases and reflexives**, which is what Phase 4's Decision 2 stores.
-  `rindiéndose` attaches a clitic to the gerund and will not appear in a plain
-  paradigm table for `rendir`. Tiers 4 and 5 carry these, or a human does.
-- **Register**, though the containment match sidesteps most of it by accepting
-  any valid form.
+Every claim settled, by three local data files, at no cost. The 3 entries that
+were still in the human queue went to zero.
 
-So the human queue does not disappear. It changes shape, from "read every row"
-to "settle the lexical and phrasal residue" — and that residue is the part a
-non-expert can actually work with a dictionary open, which is the point.
+The split also settled the tier 5 question: there was no morphological residue
+for a consensus tier to work on. What tiers 1 to 3 cannot reach is *translations*
+— a different question, in a different direction — and that is tier 4's job, not
+a second generator's. Cross-model consensus remains unbuilt, and the argument
+against it is now empirical rather than anticipated.
+
+### Two things the resources actually turned out to be
+
+Both were discovered by running the chain against real data, and both changed
+the code.
+
+1. **UniMorph has no verb paradigm for *querer*.** It carries the lemma only as
+   a noun — `querer`/`quereres`, the nominalised infinitive — and *quiere*
+   appears nowhere in the Spanish dump as a surface. The first version of the
+   paradigm tier read "lemma is known, surface is absent" as a contradiction,
+   and so contradicted *quiere*, *quiso*, *queriendo* and *querido*: four false
+   contradictions on a correct entry, for one of the commonest verbs in the
+   language.
+
+   The fix is the rule the tier should have had from the start: a paradigm may
+   only contradict when it holds rows **for the part of speech being asked
+   about**. A resource that knows a lemma as a different part of speech knows
+   nothing about the claim. This is the same principle as `:unknown` itself,
+   applied one level down, and it is why `same_category/2` exists.
+
+2. **Uzbek has no resources at all**, which is worse than "the chain falls
+   through most often". `github.com/unimorph/uzb` is 1,277 rows over 16 noun
+   lemmas, and the intersection with the 98 target translations in `en-uz.tsv`
+   is empty. `hermitdave/FrequencyWords` has no Uzbek list under any year. So
+   tiers 1 and 3 are both dark, no Uzbek rules are written, and the floor is set
+   to 2 — meaning en-uz auto-approves nothing and says so on the dashboard.
+
+   The tempting fix, leaning on tier 4, is refused for the reason the phase
+   anticipated: model agreement is only evidence when the errors are
+   independent, and in a low-resource language the analysing model plausibly
+   shares a training corpus, and therefore a blind spot, with the generating
+   one. A floor that admits it cannot check something is more useful than one
+   that approves 98 rows nobody can read.
+
+### The confidence floor, as set
+
+The floor is the weakest tier whose confirmation may auto-approve. Lower is
+stricter, and each value is a claim about the resources that exist:
+
+| Pair | Floor | Because |
+| --- | --- | --- |
+| en-es | 3 | 34,567 paradigm rows and a 50,000-word attestation list. Morphology can be settled from data. |
+| en-zh | 4 | Chinese does not inflect, so there is nothing for tiers 1 and 2 to check and the only claim is the translation. Attestation says the characters exist; only the round trip speaks to meaning. |
+| en-uz | 2 | Tiers 1 and 3 have no data and no Uzbek rules are written, so nothing auto-approves. |
+
+An undeclared language gets floor 1 rather than a generous default, because a
+pair nobody has declared has no resources by definition.
+
+### What is decided without a human, and what is not
+
+- **Approved** when every claim is confirmed and the weakest confirming tier is
+  at or above the floor.
+- **A contradicted form is dropped** when the contradiction came from tier 1 or
+  2, and the entry is judged on what is left. This is safe in a specific way:
+  dropping a form restores exactly the behaviour of an entry that never had one,
+  where the client falls back to the base translation. A paradigm row saying
+  *correrá* is not a past tense is a fact, not a judgement call. An entry whose
+  every form was dropped is approved rather than queued — sending a reader a row
+  with nothing on it is not review, it is paperwork.
+- **Nothing is ever auto-rejected.** Rejection clears data, and the evidence
+  that justifies withholding something from a page is not the evidence that
+  justifies deleting it.
+- **Everything else queues**: a contradicted translation, a contradiction from
+  the round trip, and every `:unknown`.
+
+### The data files, and why they are checked in
+
+`priv/verification/` holds 2.8MB of derived data: `es-paradigms.tsv` (34,567
+rows), `es-corpus.txt` and `zh-corpus.txt` (50,000 surfaces each). The upstream
+sources are a 50MB UniMorph dump and two 600KB frequency lists.
+
+Checking in the filtered files means a fresh clone can verify without a network
+round trip, and means the confidence floors describe resources that are actually
+present rather than resources someone might have downloaded. The paradigm file
+is cut to lemmas in the top 30,000 of the target frequency list and to the
+bundles the seven form keys can ask about, which is what takes it from 7.4MB to
+1.3MB.
+
+The **feature map stays in Elixir** rather than in the build script, and the
+file keeps raw UniMorph tags, because the map is the per-language artefact that
+encodes a linguistic decision and it belongs next to the floor it is judged
+with.
+
+### The round trip, and the one rule it must keep
+
+Tier 4 hands a model the target-language surfaces on their own — no English, no
+expected feature, no mention of what they are supposed to be — and asks what
+they are. A claim confirms when the analysis arrives back at what generation was
+asked for.
+
+This is not a judge. A judge is shown an answer and asked whether it is correct,
+and it agrees, because agreeing is easy and the answer under test is sitting
+right there anchoring it. Nothing in the analysis prompt says what a surface
+should be, so a hallucinated form has nothing to be anchored to. There is a test
+asserting the English entry never reaches the prompt, and it is the most
+important test in the file: the moment it fails, the tier has quietly become a
+judge and its confirmations mean much less than the floor assumes.
+
+Two implementation notes that matter more than they look:
+
+- **The chain is walked a tier at a time, not a claim at a time.** Preparing the
+  whole chain up front is the obvious shape and would pay a model to analyse
+  every form a paradigm table settles for free. Each tier only sees the claims
+  still open when it is reached, so for en-es the expensive tier is asked about
+  almost nothing.
+- **A failed analysis leaves claims at `:unknown`.** Verification failing closed
+  is the only safe direction; the alternative is approving on evidence never
+  gathered.
+
+### What verification still does not cover
+
+Unchanged from the phase's own statement of it, and worth keeping in front of a
+reader:
+
+- **A hand-authored translation.** The chain checks morphology given a lemma,
+  and checks a generated gloss by round trip. Whether *correr* is the right
+  Spanish for "run" is a judgement `en-es.tsv` made and nothing re-reads.
+- **Phrases and reflexives.** `rindiéndose` attaches a clitic to a gerund and
+  appears in no plain paradigm table. Tier 4 carries these, or a human does.
+- **The untranslated column.** `Verification.untranslated_rows/1` finds rows
+  whose target repeats the English and the dashboard reports them, but it only
+  reports: `en-es` has nine such rows that are simply correct (*no*, *real*,
+  *idea*, *hospital*), and a check that cannot tell those from `the → the` has
+  no business changing anything on its own.
 
 ### A note against Q1-E's stated pro
 
@@ -974,15 +1085,90 @@ degrades to `:unknown` and routes to the next tier; it cannot produce a bad form
 only fail to confirm a good one. That is a much weaker dependency than the
 runtime morphology engine Q1-C was rejected for, and it fails safe.
 
-### Where to start
+## What Phase 4.6 built
 
-Build the contract and tiers 1–3 only, then run them over the 60 en-es entries
-that already exist. That produces a real confirmed / contradicted / unknown split
-instead of an estimate, and the split decides whether tiers 4 and 5 are worth
-building at all. If paradigm lookup and rule checks clear most of the morphology
-on their own, the consensus tier may never need to exist.
+The third language pair, and the first whose target side nobody on the project
+can read. That is what made it worth doing immediately after 4.5 rather than
+later: `en-zh` is the pair the old review gate was flatly impossible for, so it
+is the honest test of whether the new one works.
 
-## Picking up Phase 5 (after 4.5)
+| Thing | Where |
+| --- | --- |
+| `en-zh`, and `zh` as a language with a script and a romanisation | `lib/linguaswap/vocabulary/word.ex`, `lib/linguaswap/languages.ex` |
+| The English side of the dictionary with an empty target column | `priv/data/en-zh.tsv` |
+| Pinyin in the prompt and the schema, for a romanised target only | `lib/linguaswap/dictionary.ex` |
+| `pronunciation` served to the client | `lib/linguaswap_web/api_controller.ex` |
+| Pinyin on reveal | `chrome-extension/content.css`, `content.js` |
+| The pair in the popup | `chrome-extension/popup.html` |
+
+### A dictionary with no translations in it
+
+`en-zh.tsv` carries 539 rows of `word <TAB> <TAB> rank`. The target column is
+empty, and this is the first dictionary in the project built that way.
+
+The alternatives were both worse. Machine-translating 539 rows into a checked-in
+file produces something that *looks* hand-checked and is not, which is exactly
+the laundering Phase 4.5 exists to prevent — and doing it in a file rather than
+in the pipeline puts it beyond the reach of the verification chain. Shipping
+placeholders like `en-uz`'s `the → the` is worse still, because a placeholder is
+indistinguishable from an answer.
+
+So the file carries only what it actually knows: which English words earn an
+entry and in what order. That is genuinely language-independent data — it
+describes English — and it is the whole English side of `en-es.tsv`, same corpus
+ordering, same lemma reduction, same phrase section at the same ranks.
+
+Three consequences, all of which needed code:
+
+1. **A translation became optional** — but only before generation. `Word` allows
+   a blank target while `review_status` is `nil` and requires one after, so a
+   placeholder is legal and a generated row without a translation is a bug.
+   Blank is stored as `nil` so it has one spelling.
+2. **Placeholders must never reach a user.** They hold the frequency rank that
+   decides when a word is taught, so they belong in the table, but activating
+   one would spend a pool slot on a word that cannot be shown. `frontier_words`,
+   `count_frontier_words` and `get_words_for_replacement` all filter them out.
+3. **An unchecked generated translation must not be served either.** Phase 4
+   withheld generated *forms* and served the translation regardless, which was
+   sound while every translation was hand-authored. It stopped being sound the
+   moment the generator started supplying them: an unchecked gloss is a worse
+   thing to put on a page than an unchecked form, because there is nothing
+   behind it to fall back to. `Word.servable?/1` now covers both cases.
+
+### Chinese has no forms, so `pronunciation` is what it has instead
+
+No `en-zh` entry will ever carry a `forms` map — Chinese does not inflect, and
+the seven form keys have nothing to ask it. What a Chinese entry needs instead
+is something Spanish never did: a reader who meets 跑 on a page has no way to
+say it, and a gloss you cannot pronounce is half a gloss.
+
+So `words.pronunciation` holds pinyin with tone marks, and it is filled only for
+a target language that declares a romanisation. Spanish and Uzbek get `nil`
+rather than a copy of the written form, because repeating *correr* as its own
+pronunciation guide is a column of noise, and an optional schema property
+nothing can fill is an invitation for a model to fill it anyway — which is why
+`Dictionary.response_schema/1` takes the pair and only adds the property when it
+applies.
+
+On the page it appears **on reveal**, next to the English, through a CSS
+pseudo-element rather than a child node. That is not a stylistic preference: the
+reveal works by assigning `textContent`, which would wipe any element inside the
+span, and `::after` content survives it. It also keeps the annotation out of
+find-in-page and out of a text selection, which is right for text nobody typed.
+
+### What it costs, and what has not been spent
+
+Generating all 539 `en-zh` entries is about $0.80 at the measured Phase 4 rate,
+plus verification, where every entry makes exactly one translation claim and
+every claim reaches tier 4 — so roughly $0.55 more at 15 surfaces a request.
+About $1.35 for the pair.
+
+None of it has been run. The English side is imported and the button is on
+`/dictionary/review`; what stops it is a decision to spend, which is the right
+place for that decision to sit.
+
+
+## Picking up Phase 5
 
 Three things about the Phase 4 code shape the work:
 
@@ -1005,7 +1191,13 @@ Three things about the Phase 4 code shape the work:
    flagged this as a follow-up and it is still unanswered; it is a product
    decision, and it gates the phase more than the plumbing does.
 
-And the standing risk, unchanged: **en-uz**. Phase 4 can generate it and
-Phase 4.5 can verify part of it, but Uzbek is where the verification chain falls
-through most often, and generating 98 words of Uzbek that nobody can read or
-confirm would only move the problem into the database.
+And the standing risk, now measured rather than suspected: **en-uz**. Phase 4.5
+established that no verification tier has any data for Uzbek at all, so its
+floor is 2 and it auto-approves nothing. Generating 98 words of Uzbek would put
+98 rows in a queue nobody on this project can read, which is the same problem
+Phase 4.5 removed everywhere else, still unsolved in the one pair that needs a
+speaker rather than a resource.
+
+The `en-zh` counterpart is the opposite shape and is worth doing first: the
+chain can check it, the button is there, and what stands between the pair and
+539 usable entries is about $1.35 and a decision to spend it.

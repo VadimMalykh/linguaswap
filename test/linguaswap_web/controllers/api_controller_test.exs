@@ -29,6 +29,53 @@ defmodule LinguaswapWeb.ApiControllerTest do
              } = hd(words)
     end
 
+    test "serves a pronunciation for a script the reader cannot sound out", %{
+      conn: conn,
+      user: user
+    } do
+      {:ok, user} = Linguaswap.Accounts.update_user_target_language(user, "zh")
+
+      {:ok, word} =
+        Vocabulary.create_word(%{
+          original_word: "run",
+          target_translation: "跑",
+          pronunciation: "pǎo",
+          language_pair: "en-zh",
+          source: "llm",
+          review_status: "approved"
+        })
+
+      Vocabulary.record_word_reveal(user.id, word.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-zh")
+      assert %{"words" => [served]} = json_response(conn, 200)
+      assert served["translation"] == "跑"
+      assert served["pronunciation"] == "pǎo"
+    end
+
+    test "withholds a translation the generator invented until it has been checked", %{
+      conn: conn,
+      user: user
+    } do
+      # Phase 4 withheld generated *forms* and served the translation regardless,
+      # which was sound while every translation was hand-authored. A model's
+      # unchecked gloss is a worse thing to put on a page than an unchecked
+      # form, because there is nothing behind it to fall back to.
+      {:ok, unchecked} =
+        Vocabulary.create_word(%{
+          original_word: "run",
+          target_translation: "跑",
+          language_pair: "en-zh",
+          source: "llm",
+          review_status: "pending"
+        })
+
+      Vocabulary.record_word_reveal(user.id, unchecked.id)
+
+      conn = get(conn, ~p"/api/v1/words?language_pair=en-zh")
+      assert %{"words" => []} = json_response(conn, 200)
+    end
+
     test "serves the lemma so the client can match inflected page text", %{
       conn: conn,
       user: user

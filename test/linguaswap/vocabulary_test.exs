@@ -23,8 +23,34 @@ defmodule Linguaswap.VocabularyTest do
     test "returns error with missing required fields" do
       assert {:error, changeset} = Vocabulary.create_word(%{})
       assert errors_on(changeset).original_word
-      assert errors_on(changeset).target_translation
       assert errors_on(changeset).language_pair
+    end
+
+    # A dictionary entry may be a placeholder waiting for the generator to
+    # supply its target side — priv/data/en-zh.tsv is 539 rows in exactly that
+    # state — so a blank translation is legal until the row has been generated,
+    # and stored as nil so blank has one spelling.
+    test "accepts an entry with no translation yet" do
+      assert {:ok, word} =
+               Vocabulary.create_word(%{
+                 original_word: "placeholder_#{System.unique_integer()}",
+                 target_translation: "",
+                 language_pair: "en-zh"
+               })
+
+      assert word.target_translation == nil
+      refute Linguaswap.Vocabulary.Word.servable?(word)
+    end
+
+    test "requires a translation once the entry has been generated" do
+      assert {:error, changeset} =
+               Vocabulary.create_word(%{
+                 original_word: "generated_#{System.unique_integer()}",
+                 language_pair: "en-zh",
+                 review_status: "pending"
+               })
+
+      assert errors_on(changeset).target_translation
     end
 
     test "returns error with duplicate original_word + language_pair" do
@@ -837,9 +863,9 @@ defmodule Linguaswap.VocabularyTest do
 
     test "returns the changeset for invalid attributes" do
       assert {:error, changeset} =
-               Vocabulary.upsert_word(%{original_word: "hello", language_pair: "en-es"})
+               Vocabulary.upsert_word(%{original_word: "hello", language_pair: "en-fr"})
 
-      assert errors_on(changeset).target_translation
+      assert errors_on(changeset).language_pair
     end
   end
 
