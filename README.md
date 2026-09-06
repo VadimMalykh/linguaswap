@@ -24,9 +24,14 @@ a page until a human approves it on the dashboard.
 Not yet: whole-sentence translation, and any LLM call at page-load time — the
 runtime is still a dumb, fast client over precomputed data. The Spanish
 dictionary holds 539 entries in corpus frequency order, 45 of them phrases;
-**Uzbek is still the original 98-word seed**, and generating its forms without a
-speaker to check them is exactly the risk the review workflow exists for.
-ROADMAP.md has the full gap list and what addresses each.
+**Uzbek is still the original 98-word seed**.
+
+**The per-entry approval step is being replaced.** It assumes a reviewer who
+reads the target language, and it caps the dictionary at whatever a human can
+face reading — which is why it stopped near 500. Phase 4.5 puts a chain of
+automated verifiers in front of the queue (paradigm lookup, corpus attestation,
+round-trip analysis, cross-model consensus) and leaves the human only the
+residue those cannot settle. ROADMAP.md has the design and the full gap list.
 
 ## Prerequisites
 
